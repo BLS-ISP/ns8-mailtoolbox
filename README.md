@@ -90,10 +90,10 @@ Run on your NethServer 8 leader node (replace `1` with the target node ID, ideal
 add-module ghcr.io/bls-isp/mail-toolbox:latest 1
 ```
 
-### Method 2: Install via NS8 Software Center
-Tagged releases publish an NS8 Software Center repository index (`repodata.json` + `metadata.json`):
+### Method 2: Install via NS8 Software Center (`BLS-ISP/ns8-nethforge`)
+`Mail Toolbox` is published in the BLS-ISP NethServer 8 Software Center repository (`https://github.com/BLS-ISP/ns8-nethforge`):
 1. In NS8 Cockpit, open **Settings -> Software repositories -> Add repository**.
-2. Set **Name** to `Mail Toolbox` and **URL** to `https://bls-isp.github.io/ns8-mailtoolbox/`.
+2. Set **Name** to `bls-isp` and **URL** to `https://raw.githubusercontent.com/BLS-ISP/ns8-nethforge/repomd/ns8/updates/`.
 3. Open **Software Center**, locate **Mail Toolbox**, and install it onto the target node.
 
 ---

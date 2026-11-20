@@ -1031,6 +1031,9 @@ def test_github_release_alignment_and_english_readme():
     assert "ghcr.io/bls-isp" in readme_text, (
         "README.md must reference `ghcr.io/bls-isp`"
     )
+    assert "https://raw.githubusercontent.com/BLS-ISP/ns8-nethforge/repomd/ns8/updates/" in readme_text, (
+        "README.md must document the BLS-ISP/ns8-nethforge Software Center repository URL"
+    )
 
     forbidden_german_headings_or_phrases = (
         "Projektübersicht",
@@ -1071,6 +1074,9 @@ def test_github_release_alignment_and_english_readme():
     assert metadata.get("source") == "ghcr.io/bls-isp/mail-toolbox", (
         f"ui/public/metadata.json `source` mismatch: {metadata.get('source')!r}"
     )
+    assert metadata.get("upstream_name") == "NS8 Mail Toolbox", (
+        f"ui/public/metadata.json `upstream_name` mismatch: {metadata.get('upstream_name')!r}"
+    )
     docs = metadata.get("docs", {})
     assert docs.get("code_url") == "https://github.com/BLS-ISP/ns8-mailtoolbox", (
         f"ui/public/metadata.json `docs.code_url` mismatch: {docs.get('code_url')!r}"
@@ -1080,6 +1086,12 @@ def test_github_release_alignment_and_english_readme():
     )
     assert docs.get("documentation_url") == "https://github.com/BLS-ISP/ns8-mailtoolbox#readme", (
         f"ui/public/metadata.json `docs.documentation_url` mismatch: {docs.get('documentation_url')!r}"
+    )
+    assert docs.get("terms_url") == "https://github.com/BLS-ISP/ns8-mailtoolbox/blob/main/LICENSE", (
+        f"ui/public/metadata.json `docs.terms_url` mismatch: {docs.get('terms_url')!r}"
+    )
+    assert docs.get("relnotes_url") == "https://github.com/BLS-ISP/ns8-mailtoolbox/releases", (
+        f"ui/public/metadata.json `docs.relnotes_url` mismatch: {docs.get('relnotes_url')!r}"
     )
 
     for rel_script in (
