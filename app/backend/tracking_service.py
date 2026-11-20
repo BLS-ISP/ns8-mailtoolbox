@@ -1,11 +1,20 @@
-"""Phase 3b Fast Mail-Tracking Search backed by Rspamd Controller `/history` + SQLite cache."""
+"""Phase 3b Fast Mail-Tracking Search backed by Rspamd Controller `/history` + SQLite cache.
+
+Supports both direct local Rspamd (`http://127.0.0.1:11334` with `Password` header) and
+NS8 Traefik `/rspamd` HTTPS routes (with self-signed TLS `rspamd_tls_verify=False`,
+HTTP Basic Auth `rspamd_user:rspamd_password`, URL `/history` normalization, and
+Hairpin-NAT / Split-DNS host fallback).
+"""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import ipaddress
 import logging
+import os
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -13,6 +22,57 @@ from app.backend.config import get_settings, translate_loopback_url
 from app.backend.db import query_mail_history_cache, upsert_mail_history_rows
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_rspamd_base_url(raw_url: str) -> str:
+    """Normalize a user-entered Rspamd URL so `{base}/history` is always valid."""
+    cleaned = (raw_url or "").strip()
+    if not cleaned:
+        return ""
+    try:
+        parts = urlsplit(cleaned)
+        path = (parts.path or "").rstrip("/")
+        if path.lower().endswith("/history"):
+            path = path[: -len("/history")].rstrip("/")
+        return urlunsplit((parts.scheme, parts.netloc, path, "", "")).rstrip("/")
+    except Exception:
+        return cleaned.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+
+
+def _is_ip_literal(hostname: str) -> bool:
+    if not hostname:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(hostname.strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
+def _build_hairpin_fallback_url(base_url: str, fallback_host: str) -> tuple[str, str] | None:
+    """Build `(fallback_base_url, original_host_header)` when public FQDN fails hairpin NAT."""
+    fb = (fallback_host or "").strip()
+    if not fb:
+        return None
+    parts = urlsplit(base_url)
+    orig_host = (parts.hostname or "").strip()
+    if not orig_host or _is_ip_literal(orig_host) or orig_host.lower() == fb.lower():
+        return None
+
+    userinfo = ""
+    if parts.username:
+        userinfo = parts.username
+        if parts.password is not None:
+            userinfo += f":{parts.password}"
+        userinfo += "@"
+
+    port_suffix = f":{parts.port}" if parts.port is not None else ""
+    new_netloc = f"{userinfo}{fb}{port_suffix}"
+    orig_host_hdr = f"{orig_host}{port_suffix}"
+    fb_base = urlunsplit((parts.scheme, new_netloc, parts.path, "", "")).rstrip("/")
+    return fb_base, orig_host_hdr
 
 
 def normalize_rspamd_action(raw_action: str) -> str:
@@ -95,7 +155,7 @@ def _normalize_history_row(raw: dict[str, Any]) -> dict[str, Any] | None:
 
     try:
         required_score = round(
-            float(raw.get("required_score", raw.get(" thresholds", 15.0)) or 0.0), 2
+            float(raw.get("required_score", raw.get("thresholds", 15.0)) or 0.0), 2
         )
     except (TypeError, ValueError):
         required_score = 0.0
@@ -143,20 +203,84 @@ def _normalize_history_row(raw: dict[str, Any]) -> dict[str, Any] | None:
 def fetch_rspamd_history(
     rspamd_url: str,
     rspamd_password: str = "",
+    *,
+    rspamd_user: str = "",
+    rspamd_tls_verify: bool = False,
+    fallback_host: str = "",
 ) -> list[dict[str, Any]]:
-    """Fetch `/history` from Rspamd Controller HTTP API."""
-    base = (rspamd_url or "").strip().rstrip("/")
+    """Fetch `/history` from Rspamd Controller or NS8 Traefik `/rspamd` HTTPS route."""
+    base = normalize_rspamd_base_url(rspamd_url)
     if not base:
         raise RuntimeError("Rspamd URL is not configured")
 
-    headers: dict[str, str] = {}
-    if rspamd_password:
-        headers["Password"] = rspamd_password
+    user_clean = (rspamd_user or "").strip()
+    pw_clean = rspamd_password or ""
 
-    with httpx.Client(timeout=8.0) as client:
-        resp = client.get(f"{base}/history", headers=headers)
-        if resp.status_code in (401, 403):
-            raise RuntimeError(f"Rspamd authentication failed (HTTP {resp.status_code})")
+    headers: dict[str, str] = {}
+    auth: tuple[str, str] | None = None
+    if user_clean:
+        auth = (user_clean, pw_clean)
+    elif pw_clean:
+        headers["Password"] = pw_clean
+
+    target_url = f"{base}/history"
+
+    def _do_request(
+        client: httpx.Client,
+        url: str,
+        req_headers: dict[str, str],
+        req_auth: tuple[str, str] | None,
+    ) -> httpx.Response:
+        return client.get(url, headers=req_headers, auth=req_auth)
+
+    with httpx.Client(
+        timeout=10.0,
+        verify=bool(rspamd_tls_verify),
+        follow_redirects=True,
+    ) as client:
+        active_url = target_url
+        active_headers = dict(headers)
+        try:
+            resp = _do_request(client, active_url, active_headers, auth)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as conn_exc:
+            # Hairpin-NAT / Split-DNS fallback via mail_host or CONTAINER_HOST_GATEWAY
+            gw = os.environ.get("CONTAINER_HOST_GATEWAY", "").strip()
+            fb_target = (fallback_host or gw or "").strip()
+            fb_pair = _build_hairpin_fallback_url(base, fb_target)
+            if fb_pair is None:
+                raise
+            fb_base, orig_host_hdr = fb_pair
+            active_url = f"{fb_base}/history"
+            active_headers = {**headers, "Host": orig_host_hdr}
+            try:
+                resp = _do_request(client, active_url, active_headers, auth)
+            except Exception:
+                raise conn_exc
+
+        # If `user:password` was entered into rspamd_password on a `/rspamd` route, retry Basic Auth
+        if (
+            resp.status_code == 401
+            and not user_clean
+            and ":" in pw_clean
+            and "/rspamd" in base.lower()
+        ):
+            u_part, p_part = pw_clean.split(":", 1)
+            if u_part.strip():
+                retry_headers = {k: v for k, v in active_headers.items() if k != "Password"}
+                resp = _do_request(client, active_url, retry_headers, (u_part.strip(), p_part))
+
+        if resp.status_code == 401:
+            www_auth = (resp.headers.get("www-authenticate") or "").lower()
+            if "basic" in www_auth and not user_clean:
+                raise RuntimeError(
+                    "Rspamd HTTPS route requires HTTP Basic Auth — please enter an NS8 admin "
+                    "username (e.g. admin) in Rspamd Username."
+                )
+            raise RuntimeError("Rspamd authentication failed (HTTP 401)")
+
+        if resp.status_code == 403:
+            raise RuntimeError("Rspamd authentication failed (HTTP 403)")
+
         resp.raise_for_status()
         payload = resp.json()
 
@@ -197,6 +321,9 @@ def sync_and_search_mail_history(
             fresh_rows = fetch_rspamd_history(
                 settings.runtime.effective_rspamd_url,
                 settings.runtime.rspamd_password,
+                rspamd_user=settings.runtime.rspamd_user,
+                rspamd_tls_verify=settings.runtime.rspamd_tls_verify,
+                fallback_host=settings.mail.host,
             )
             upsert_mail_history_rows(fresh_rows, settings.sqlite_path)
             rspamd_connected = True
@@ -225,18 +352,33 @@ def sync_and_search_mail_history(
 def test_rspamd_connection(
     *,
     rspamd_url: str | None = None,
+    rspamd_user: str | None = None,
     rspamd_password: str | None = None,
+    rspamd_tls_verify: bool | None = None,
 ) -> dict[str, Any]:
     """Verify connectivity and authentication against Rspamd Controller `/history`."""
     settings = get_settings()
-    url = translate_loopback_url((rspamd_url or "").strip() or settings.runtime.rspamd_url)
+    raw_url = (rspamd_url or "").strip() or settings.runtime.rspamd_url
+    url = translate_loopback_url(normalize_rspamd_base_url(raw_url))
+    user = rspamd_user.strip() if rspamd_user is not None else settings.runtime.rspamd_user
     pw = (
         rspamd_password
         if (rspamd_password is not None and rspamd_password != "")
         else settings.runtime.rspamd_password
     )
+    tls_verify = (
+        bool(rspamd_tls_verify)
+        if rspamd_tls_verify is not None
+        else bool(settings.runtime.rspamd_tls_verify)
+    )
     try:
-        rows = fetch_rspamd_history(url, pw)
+        rows = fetch_rspamd_history(
+            url,
+            pw,
+            rspamd_user=user,
+            rspamd_tls_verify=tls_verify,
+            fallback_host=settings.mail.host,
+        )
         upsert_mail_history_rows(rows, settings.sqlite_path)
         return {
             "ok": True,

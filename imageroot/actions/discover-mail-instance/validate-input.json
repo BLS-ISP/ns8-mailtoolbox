@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "discover-mail-instance input",
+  "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/discover-mail-instance",
+  "description": "Live-discover Rspamd URL, user domain, LDAP schema, and AD/LDAP groups for a selected ns8-mail instance",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "mail_module_uuid": {
+      "type": "string"
+    }
+  }
+}

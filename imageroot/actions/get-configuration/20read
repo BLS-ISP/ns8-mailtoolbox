@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Read NS8 Mail Toolbox configuration, discoverable ns8-mail instances, LDAP/AD groups, and Phase 2/3 settings."""
+"""Read NS8 Mail Toolbox configuration, live-discover ns8-mail Rspamd URLs and AD/LDAP groups (even before initial save), and return Phase 1-3 settings."""
 
 from __future__ import annotations
 
@@ -10,13 +10,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import agent
-from agent.ldapproxy import Ldapproxy
+_BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
+if str(_BIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_BIN_DIR))
 
-try:
-    from agent.ldapclient import Ldapclient
-except ImportError:
-    Ldapclient = None  # type: ignore[assignment]
+import agent  # noqa: E402
+from toolbox_discovery import (  # noqa: E402
+    discover_available_mail_servers,
+    discover_domain_groups_and_schema,
+    normalize_rspamd_url,
+)
 
 
 def _parse_bool(raw: Any, default: bool = False) -> bool:
@@ -36,84 +39,6 @@ def _load_toolbox_settings(state_dir: Path) -> dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
-
-
-def _discover_available_mail_servers(rdb: Any, current_node_id: int) -> list[dict[str, Any]]:
-    imap_providers = agent.list_service_providers(rdb, "imap", "tcp") or []
-    sub_providers = agent.list_service_providers(rdb, "submission", "tcp") or []
-    sub_by_uuid = {
-        str(p.get("module_uuid", "")): p
-        for p in sub_providers
-        if isinstance(p, dict) and p.get("module_uuid")
-    }
-
-    servers: list[dict[str, Any]] = []
-    seen_uuids: set[str] = set()
-    for provider in imap_providers:
-        if not isinstance(provider, dict):
-            continue
-        module_uuid = str(provider.get("module_uuid", "")).strip()
-        module_id = str(provider.get("module_id", "")).strip()
-        if not module_uuid or module_uuid in seen_uuids:
-            continue
-        seen_uuids.add(module_uuid)
-
-        sub_info = sub_by_uuid.get(module_uuid, {})
-        mail_hostname = str(
-            provider.get("mail_hostname")
-            or provider.get("hostname")
-            or sub_info.get("mail_hostname")
-            or sub_info.get("hostname")
-            or provider.get("host")
-            or module_id
-        ).strip()
-        user_domain = str(provider.get("user_domain", "")).strip()
-        try:
-            node_id = int(provider.get("node", 0) or 0)
-        except (TypeError, ValueError):
-            node_id = 0
-        same_node = bool(current_node_id and node_id == current_node_id)
-
-        servers.append(
-            {
-                "module_id": module_id,
-                "module_uuid": module_uuid,
-                "mail_hostname": mail_hostname,
-                "user_domain": user_domain,
-                "node_id": node_id,
-                "same_node": same_node,
-            }
-        )
-
-    servers.sort(key=lambda s: (not s["same_node"], s["module_id"]))
-    return servers
-
-
-def _discover_available_groups(user_domain: str) -> list[dict[str, str]]:
-    if not user_domain or Ldapclient is None:
-        return []
-    try:
-        domain_info = Ldapproxy().get_domain(user_domain)
-        if not domain_info:
-            return []
-        raw_groups = Ldapclient.factory(**domain_info).list_groups()
-    except Exception:
-        return []
-
-    groups: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for item in raw_groups or []:
-        if not isinstance(item, dict):
-            continue
-        g_name = str(item.get("group") or item.get("cn") or "").strip()
-        if not g_name or g_name.lower() in seen:
-            continue
-        seen.add(g_name.lower())
-        desc = str(item.get("description") or "").strip()
-        groups.append({"group": g_name, "description": desc})
-
-    groups.sort(key=lambda g: g["group"].lower())
-    return groups
 
 
 def _build_milter_postfix_snippet(
@@ -150,6 +75,16 @@ def main() -> int:
     mail_module_id = os.environ.get("MAIL_MODULE_ID", "").strip()
     user_domain = os.environ.get("USER_DOMAIN", "").strip()
     portal_hostname = os.environ.get("PORTAL_HOSTNAME", "").strip()
+    configured = bool(mail_module_uuid)
+
+    if configured:
+        portal_enabled = _parse_bool(
+            os.environ.get("PORTAL_ENABLED"),
+            default=bool(portal_hostname),
+        )
+    else:
+        portal_enabled = True
+
     lets_encrypt = _parse_bool(os.environ.get("LETS_ENCRYPT"), default=False)
     http2https = _parse_bool(os.environ.get("HTTP2HTTPS"), default=True)
     allowed_groups = [
@@ -182,22 +117,55 @@ def main() -> int:
     available_mail_servers: list[dict[str, Any]] = []
     try:
         rdb = agent.redis_connect(use_replica=True)
-        available_mail_servers = _discover_available_mail_servers(rdb, current_node_id)
+        available_mail_servers = discover_available_mail_servers(rdb, current_node_id)
     except Exception as exc:
         print(f"Warning: Failed to list mail service providers: {exc}", file=sys.stderr)
 
-    available_groups = _discover_available_groups(user_domain)
-    configured = bool(mail_module_uuid and portal_hostname)
+    # Determine target mail server even BEFORE first configure-module save
+    target_server: dict[str, Any] | None = None
+    if mail_module_uuid:
+        for srv in available_mail_servers:
+            if srv["module_uuid"] == mail_module_uuid:
+                target_server = srv
+                break
+    if target_server is None and available_mail_servers:
+        target_server = available_mail_servers[0]
+
+    target_user_domain = user_domain or (
+        str(target_server["user_domain"]) if target_server else ""
+    )
+    target_mail_id = mail_module_id or (
+        str(target_server["module_id"]) if target_server else ""
+    )
+    discovered_rspamd_url = (
+        str(target_server.get("rspamd_url") or "")
+        if target_server
+        else ""
+    ) or "http://127.0.0.1:11334"
+
+    ldap_schema, available_groups = discover_domain_groups_and_schema(
+        user_domain=target_user_domain,
+        mail_module_id=target_mail_id,
+    )
 
     milter_enabled = _parse_bool(
         saved_settings.get("milter_enabled", os.environ.get("MILTER_ENABLED")),
         default=True,
     )
-    rspamd_url = (
-        str(saved_settings.get("rspamd_url") or os.environ.get("RSPAMD_URL") or "").strip()
-        or "http://127.0.0.1:11334"
+
+    saved_rspamd_url = normalize_rspamd_url(
+        saved_settings.get("rspamd_url") or os.environ.get("RSPAMD_URL")
     )
+    rspamd_url = saved_rspamd_url or discovered_rspamd_url or "http://127.0.0.1:11334"
+    rspamd_user = str(
+        saved_settings.get("rspamd_user", os.environ.get("RSPAMD_USER", ""))
+    ).strip()
     rspamd_password_set = bool(str(saved_settings.get("rspamd_password") or ""))
+    rspamd_tls_verify = _parse_bool(
+        saved_settings.get("rspamd_tls_verify", os.environ.get("RSPAMD_TLS_VERIFY")),
+        default=False,
+    )
+
     digest_enabled = _parse_bool(
         saved_settings.get("digest_enabled", os.environ.get("DIGEST_ENABLED")),
         default=False,
@@ -214,9 +182,7 @@ def main() -> int:
         saved_settings.get("admin_alert_email", os.environ.get("ADMIN_ALERT_EMAIL", ""))
     ).strip()
 
-    snippet_mail_id = mail_module_id or (
-        available_mail_servers[0]["module_id"] if available_mail_servers else "mail1"
-    )
+    snippet_mail_id = target_mail_id or "mail1"
     milter_postfix_snippet = _build_milter_postfix_snippet(
         snippet_mail_id, milter_bind_host, milter_tcp_port
     )
@@ -226,7 +192,9 @@ def main() -> int:
         "configured": configured,
         "mail_module_uuid": mail_module_uuid,
         "mail_module_id": mail_module_id,
-        "user_domain": user_domain,
+        "user_domain": user_domain or target_user_domain,
+        "ldap_schema": ldap_schema,
+        "portal_enabled": portal_enabled,
         "portal_hostname": portal_hostname,
         "lets_encrypt": lets_encrypt,
         "http2https": http2https,
@@ -239,8 +207,11 @@ def main() -> int:
         "milter_enabled": milter_enabled,
         "milter_postfix_snippet": milter_postfix_snippet,
         "milter_postfix_reset_snippet": milter_postfix_reset_snippet,
+        "discovered_rspamd_url": discovered_rspamd_url,
         "rspamd_url": rspamd_url,
+        "rspamd_user": rspamd_user,
         "rspamd_password_set": rspamd_password_set,
+        "rspamd_tls_verify": rspamd_tls_verify,
         "digest_enabled": digest_enabled,
         "digest_time": digest_time,
         "timezone": timezone_name,

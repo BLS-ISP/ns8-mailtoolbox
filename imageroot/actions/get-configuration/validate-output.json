@@ -2,14 +2,16 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "get-configuration output",
   "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/get-configuration",
-  "description": "Current NS8 Mail Toolbox configuration, coupled mail servers, LDAP/AD groups, and Phase 2/3 Milter, Rspamd, Digest, Portal Tracking, and Connector settings",
+  "description": "Current NS8 Mail Toolbox configuration, live-discovered ns8-mail Rspamd URLs, enriched AD/LDAP groups, and Phase 2/3 settings",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": [
     "configured",
     "mail_module_uuid",
     "mail_module_id",
     "user_domain",
+    "ldap_schema",
+    "portal_enabled",
     "portal_hostname",
     "lets_encrypt",
     "http2https",
@@ -22,8 +24,11 @@
     "milter_enabled",
     "milter_postfix_snippet",
     "milter_postfix_reset_snippet",
+    "discovered_rspamd_url",
     "rspamd_url",
+    "rspamd_user",
     "rspamd_password_set",
+    "rspamd_tls_verify",
     "digest_enabled",
     "digest_time",
     "timezone",
@@ -41,6 +46,12 @@
     },
     "user_domain": {
       "type": "string"
+    },
+    "ldap_schema": {
+      "type": "string"
+    },
+    "portal_enabled": {
+      "type": "boolean"
     },
     "portal_hostname": {
       "type": "string"
@@ -70,13 +81,15 @@
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": true,
         "required": [
           "module_id",
           "module_uuid",
           "mail_hostname",
           "user_domain",
           "node_id",
-          "same_node"
+          "same_node",
+          "rspamd_url"
         ],
         "properties": {
           "module_id": {
@@ -96,6 +109,9 @@
           },
           "same_node": {
             "type": "boolean"
+          },
+          "rspamd_url": {
+            "type": "string"
           }
         }
       }
@@ -104,9 +120,12 @@
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": true,
         "required": [
           "group",
-          "description"
+          "description",
+          "member_count",
+          "is_system"
         ],
         "properties": {
           "group": {
@@ -114,6 +133,12 @@
           },
           "description": {
             "type": "string"
+          },
+          "member_count": {
+            "type": ["integer", "null"]
+          },
+          "is_system": {
+            "type": "boolean"
           }
         }
       }
@@ -127,10 +152,19 @@
     "milter_postfix_reset_snippet": {
       "type": "string"
     },
+    "discovered_rspamd_url": {
+      "type": "string"
+    },
     "rspamd_url": {
       "type": "string"
     },
+    "rspamd_user": {
+      "type": "string"
+    },
     "rspamd_password_set": {
+      "type": "boolean"
+    },
+    "rspamd_tls_verify": {
       "type": "boolean"
     },
     "digest_enabled": {

@@ -49,6 +49,7 @@ class MailboxModel(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     department: str = ""
     title: str = ""
+    groups: list[str] = Field(default_factory=list)
     enabled: bool = True
     postfix_forwards: list[str] = Field(default_factory=list)
     sogo_status: SogoStatusModel = Field(default_factory=SogoStatusModel)
@@ -121,8 +122,10 @@ class ReconcileResponse(BaseModel):
 class RuntimeSettingsUpdateRequest(BaseModel):
     milter_enabled: bool | None = None
     rspamd_url: str | None = None
+    rspamd_user: str | None = None
     rspamd_password: str | None = None
     clear_rspamd_password: bool = False
+    rspamd_tls_verify: bool | None = None
     digest_enabled: bool | None = None
     digest_time: str | None = None
     timezone: str | None = None
@@ -199,7 +202,9 @@ class MailTrackingSearchRequest(BaseModel):
 
 class RspamdTestRequest(BaseModel):
     rspamd_url: str | None = None
+    rspamd_user: str | None = None
     rspamd_password: str | None = None
+    rspamd_tls_verify: bool | None = None
 
 
 # ---------------------------------------------------------------------------

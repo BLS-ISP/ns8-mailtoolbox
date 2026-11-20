@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Persist NS8 Mail Toolbox configuration, resolve WireGuard/localhost Milter bind IP, bind user domain, write toolbox_settings.json, configure Traefik route, and sync caches."""
+"""Persist NS8 Mail Toolbox configuration, resolve WireGuard/localhost Milter bind IP, bind user domain, write toolbox_settings.json, manage optional Traefik route, and sync caches."""
 
 from __future__ import annotations
 
@@ -11,8 +11,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import agent
-import agent.tasks
+_BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
+if str(_BIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_BIN_DIR))
+
+import agent  # noqa: E402
+import agent.tasks  # noqa: E402
+from toolbox_discovery import (  # noqa: E402
+    discover_mail_rspamd_url,
+    normalize_rspamd_url,
+)
 
 
 def _parse_bool(raw: Any, default: bool = False) -> bool:
@@ -85,8 +93,16 @@ def main() -> int:
     settings_path = config_dir / "toolbox_settings.json"
     existing_settings = _read_existing_settings(settings_path)
 
+    previous_portal_hostname = os.environ.get("PORTAL_HOSTNAME", "").strip().lower()
+
     mail_module_uuid = str(data["mail_module_uuid"]).strip()
-    portal_hostname = str(data["portal_hostname"]).strip().lower()
+    raw_hostname = str(data.get("portal_hostname") or "").strip().lower()
+    if "portal_enabled" in data:
+        portal_enabled = bool(data["portal_enabled"]) and bool(raw_hostname)
+    else:
+        portal_enabled = bool(raw_hostname)
+
+    portal_hostname = raw_hostname if portal_enabled else ""
     lets_encrypt = bool(data.get("lets_encrypt", False))
     http2https = bool(data.get("http2https", True))
     raw_groups = data.get("allowed_groups", []) or []
@@ -96,7 +112,6 @@ def main() -> int:
         if isinstance(group, str) and str(group).strip()
     ]
 
-    # Phase 2 & 3 settings (100% backward-compatible defaults + password preservation)
     if "portal_tracking_enabled" in data:
         portal_tracking_enabled = bool(data["portal_tracking_enabled"])
     else:
@@ -115,13 +130,44 @@ def main() -> int:
             default=True,
         )
 
-    if "rspamd_url" in data:
-        rspamd_url = str(data.get("rspamd_url") or "").strip() or "http://127.0.0.1:11334"
+    rdb = agent.redis_connect(use_replica=True)
+    imap_providers = agent.list_service_providers(
+        rdb, "imap", "tcp", {"module_uuid": mail_module_uuid}
+    )
+    agent.assert_exp(
+        len(imap_providers) > 0,
+        f"Could not find imap TCP service provider for mail_module_uuid={mail_module_uuid}",
+    )
+    imap_provider = imap_providers[0]
+    mail_module_id = str(imap_provider["module_id"]).strip()
+    user_domain = str(imap_provider["user_domain"]).strip()
+    mail_hostname = str(
+        imap_provider.get("mail_hostname")
+        or imap_provider.get("hostname")
+        or ""
+    ).strip()
+    agent.assert_exp(bool(mail_module_id), "Resolved mail_module_id is empty")
+    agent.assert_exp(bool(user_domain), "Resolved user_domain is empty")
+
+    discovered_rspamd_url = discover_mail_rspamd_url(mail_module_id, mail_hostname)
+
+    incoming_rspamd_url = normalize_rspamd_url(data.get("rspamd_url")) if "rspamd_url" in data else ""
+    saved_rspamd_url = normalize_rspamd_url(
+        existing_settings.get("rspamd_url") or os.environ.get("RSPAMD_URL")
+    )
+    rspamd_url = (
+        incoming_rspamd_url
+        or saved_rspamd_url
+        or discovered_rspamd_url
+        or "http://127.0.0.1:11334"
+    )
+
+    if "rspamd_user" in data:
+        rspamd_user = str(data.get("rspamd_user") or "").strip()
     else:
-        rspamd_url = (
-            str(existing_settings.get("rspamd_url") or os.environ.get("RSPAMD_URL") or "").strip()
-            or "http://127.0.0.1:11334"
-        )
+        rspamd_user = str(
+            existing_settings.get("rspamd_user", os.environ.get("RSPAMD_USER", ""))
+        ).strip()
 
     clear_rspamd_password = bool(data.get("clear_rspamd_password", False))
     incoming_rspamd_password = str(data.get("rspamd_password") or "")
@@ -131,6 +177,16 @@ def main() -> int:
         rspamd_password = incoming_rspamd_password
     else:
         rspamd_password = str(existing_settings.get("rspamd_password") or "")
+
+    if "rspamd_tls_verify" in data:
+        rspamd_tls_verify = bool(data["rspamd_tls_verify"])
+    else:
+        rspamd_tls_verify = _parse_bool(
+            existing_settings.get(
+                "rspamd_tls_verify", os.environ.get("RSPAMD_TLS_VERIFY")
+            ),
+            default=False,
+        )
 
     if "digest_enabled" in data:
         digest_enabled = bool(data["digest_enabled"])
@@ -163,20 +219,6 @@ def main() -> int:
             existing_settings.get("admin_alert_email", os.environ.get("ADMIN_ALERT_EMAIL", ""))
         ).strip()
 
-    rdb = agent.redis_connect(use_replica=True)
-    imap_providers = agent.list_service_providers(
-        rdb, "imap", "tcp", {"module_uuid": mail_module_uuid}
-    )
-    agent.assert_exp(
-        len(imap_providers) > 0,
-        f"Could not find imap TCP service provider for mail_module_uuid={mail_module_uuid}",
-    )
-    imap_provider = imap_providers[0]
-    mail_module_id = str(imap_provider["module_id"]).strip()
-    user_domain = str(imap_provider["user_domain"]).strip()
-    agent.assert_exp(bool(mail_module_id), "Resolved mail_module_id is empty")
-    agent.assert_exp(bool(user_domain), "Resolved user_domain is empty")
-
     try:
         current_node_id = int(os.environ.get("NODE_ID", "1") or 1)
     except ValueError:
@@ -190,6 +232,7 @@ def main() -> int:
     agent.set_env("MAIL_MODULE_UUID", mail_module_uuid)
     agent.set_env("MAIL_MODULE_ID", mail_module_id)
     agent.set_env("USER_DOMAIN", user_domain)
+    agent.set_env("PORTAL_ENABLED", "True" if portal_enabled else "False")
     agent.set_env("PORTAL_HOSTNAME", portal_hostname)
     agent.set_env("LETS_ENCRYPT", "True" if lets_encrypt else "False")
     agent.set_env("HTTP2HTTPS", "True" if http2https else "False")
@@ -198,6 +241,8 @@ def main() -> int:
     agent.set_env("MILTER_BIND_HOST", milter_bind_host)
     agent.set_env("MILTER_ENABLED", "1" if milter_enabled else "0")
     agent.set_env("RSPAMD_URL", rspamd_url)
+    agent.set_env("RSPAMD_USER", rspamd_user)
+    agent.set_env("RSPAMD_TLS_VERIFY", "True" if rspamd_tls_verify else "False")
     agent.set_env("DIGEST_ENABLED", "True" if digest_enabled else "False")
     agent.set_env("DIGEST_TIME", digest_time)
     agent.set_env("TIMEZONE", timezone_name)
@@ -211,7 +256,9 @@ def main() -> int:
         "portal_tracking_enabled": portal_tracking_enabled,
         "milter_enabled": milter_enabled,
         "rspamd_url": rspamd_url,
+        "rspamd_user": rspamd_user,
         "rspamd_password": rspamd_password,
+        "rspamd_tls_verify": rspamd_tls_verify,
         "digest_enabled": digest_enabled,
         "digest_time": digest_time,
         "timezone": timezone_name,
@@ -221,20 +268,26 @@ def main() -> int:
 
     web_tcp_port = os.environ["WEB_TCP_PORT"]
     traefik_id = agent.resolve_agent_id("traefik@node")
-    agent.assert_exp(traefik_id is not None, "Could not resolve traefik@node agent ID")
-
-    route_res = agent.tasks.run(
-        agent_id=traefik_id,
-        action="set-route",
-        data={
-            "instance": os.environ["MODULE_ID"],
-            "url": f"http://127.0.0.1:{web_tcp_port}",
-            "host": portal_hostname,
-            "lets_encrypt": lets_encrypt,
-            "http2https": http2https,
-        },
-    )
-    agent.assert_exp(route_res.get("exit_code") == 0, "Failed to configure Traefik HTTP route")
+    if portal_enabled and portal_hostname:
+        agent.assert_exp(traefik_id is not None, "Could not resolve traefik@node agent ID")
+        route_res = agent.tasks.run(
+            agent_id=traefik_id,
+            action="set-route",
+            data={
+                "instance": os.environ["MODULE_ID"],
+                "url": f"http://127.0.0.1:{web_tcp_port}",
+                "host": portal_hostname,
+                "lets_encrypt": lets_encrypt,
+                "http2https": http2https,
+            },
+        )
+        agent.assert_exp(route_res.get("exit_code") == 0, "Failed to configure Traefik HTTP route")
+    elif previous_portal_hostname and traefik_id:
+        agent.tasks.run(
+            agent_id=traefik_id,
+            action="delete-route",
+            data={"instance": os.environ["MODULE_ID"]},
+        )
 
     child_env = os.environ.copy()
     child_env.update(
@@ -242,12 +295,15 @@ def main() -> int:
             "MAIL_MODULE_UUID": mail_module_uuid,
             "MAIL_MODULE_ID": mail_module_id,
             "USER_DOMAIN": user_domain,
+            "PORTAL_ENABLED": "True" if portal_enabled else "False",
             "PORTAL_HOSTNAME": portal_hostname,
             "ALLOWED_GROUPS": allowed_groups_csv,
             "PORTAL_TRACKING_ENABLED": "True" if portal_tracking_enabled else "False",
             "MILTER_BIND_HOST": milter_bind_host,
             "MILTER_ENABLED": "1" if milter_enabled else "0",
             "RSPAMD_URL": rspamd_url,
+            "RSPAMD_USER": rspamd_user,
+            "RSPAMD_TLS_VERIFY": "True" if rspamd_tls_verify else "False",
             "DIGEST_ENABLED": "True" if digest_enabled else "False",
             "DIGEST_TIME": digest_time,
             "TIMEZONE": timezone_name,

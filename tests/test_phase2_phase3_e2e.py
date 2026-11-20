@@ -28,6 +28,7 @@ from app.backend.main import app
 from tests._mock_managesieve import MockManageSieveServer
 from tests._mock_phase23_servers import (
     MilterTestClient,
+    MockHttpsTraefikRspamdServer,
     MockImapServer,
     MockPop3Server,
     MockRspamdServer,
@@ -1059,4 +1060,255 @@ def test_production_hardening_gateway_portal_tracking_and_uninstall_cleanup(
             e["action"] == "uninstall_cleanup" and e["source"] == "system"
             for e in audit_entries
         )
+
+
+def test_v101_https_self_signed_rspamd_basic_auth_and_ad_nested_primary_groups(
+    phase23_stack: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify v1.0.1 HTTPS self-signed Rspamd + Basic Auth + AD nested groups, primaryGroupID RID & custom UPN."""
+    hdrs = phase23_stack["headers"]
+    config_dir: Path = phase23_stack["config_dir"]
+
+    https_rspamd = MockHttpsTraefikRspamdServer(
+        username="admin",
+        password="Nethesis,1234",
+        rows=[
+            {
+                "id": "tls-rsp-1",
+                "unix_time": 1763645000,
+                "sender_smtp": "partner@tls-check.de",
+                "rcpt_smtp": ["julia.empfang@firma.de"],
+                "subject": "HTTPS Self-Signed Rspamd Test",
+                "action": "no action",
+                "score": -1.1,
+                "required_score": 6.0,
+                "symbols": {"DKIM_ALLOW": {"score": -0.2}},
+                "ip": "198.51.100.88",
+                "message-id": "<tls-rsp-1@tls-check.de>",
+                "size": 3100,
+            }
+        ],
+    )
+    https_base_url = https_rspamd.start()
+
+    try:
+        # Configure Active Directory (schema=ad) with nested groups, primaryGroupID=513 (objectSid RID), and custom UPN
+        ad_base = "DC=ad,DC=firma,DC=local"
+        (config_dir / "discovery_ldap.env").write_text(
+            "LDAP_HOST=127.0.0.1\n"
+            "LDAP_PORT=389\n"
+            f"LDAP_BASE={ad_base}\n"
+            f"LDAP_USER=CN=ldapservice,CN=Users,{ad_base}\n"
+            "LDAP_PASS=ad-svc-secret\n"
+            "LDAP_SCHEMA=ad\n"
+            "LDAP_DOMAIN=ad.firma.local\n",
+            encoding="utf-8",
+        )
+        (config_dir / "mailboxes_cache.json").write_text(
+            json.dumps(
+                {
+                    "updated_at": "2026-11-20T18:00:00Z",
+                    "mailboxes": [
+                        {
+                            "user": "julia.empfang",
+                            "enabled": True,
+                            "aliases": ["empfang@firma.de"],
+                            "postfix_forwards": [],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ALLOWED_GROUPS", "mail-office-parent")
+
+        ad_server = Server("mock_v101_samba_ad", get_info=None)
+        ad_conn = Connection(ad_server, client_strategy=MOCK_SYNC)
+        ad_conn.bind()
+
+        ad_conn.strategy.add_entry(
+            f"CN=ldapservice,CN=Users,{ad_base}",
+            {
+                "objectClass": ["top", "person", "user"],
+                "cn": "ldapservice",
+                "sAMAccountName": "ldapservice",
+                "userPassword": "ad-svc-secret",
+            },
+        )
+        julia_dn = f"CN=Julia Empfang,OU=Staff,{ad_base}"
+        subteam_dn = f"CN=SubTeam-Frontdesk,OU=Groups,{ad_base}"
+        parent_dn = f"CN=mail-office-parent,OU=Groups,{ad_base}"
+
+        ad_conn.strategy.add_entry(
+            julia_dn,
+            {
+                "objectClass": ["top", "person", "organizationalPerson", "user"],
+                "cn": "Julia Empfang",
+                "displayName": "Julia Empfang",
+                "givenName": "Julia",
+                "sn": "Empfang",
+                "sAMAccountName": "julia.empfang",
+                "userPrincipalName": "julia@custom-upn.de",  # UPN suffix != ad.firma.local!
+                "mail": "julia.empfang@firma.de",
+                "department": "Empfang",
+                "title": "Frontdesk",
+                "primaryGroupID": "513",
+                "memberOf": [subteam_dn],
+                "userPassword": "JuliaAd!2026",
+            },
+        )
+        ad_conn.strategy.add_entry(
+            f"CN=Domain Users,CN=Users,{ad_base}",
+            {
+                "objectClass": ["top", "group"],
+                "cn": "Domain Users",
+                "sAMAccountName": "Domain Users",
+                "description": "All domain users",
+                "objectSid": "S-1-5-21-11111111-22222222-33333333-513",
+            },
+        )
+        ad_conn.strategy.add_entry(
+            subteam_dn,
+            {
+                "objectClass": ["top", "group"],
+                "cn": "SubTeam-Frontdesk",
+                "sAMAccountName": "SubTeam-Frontdesk",
+                "description": "Frontdesk Sub-Team",
+                "member": [julia_dn],
+                "memberOf": [parent_dn],
+            },
+        )
+        ad_conn.strategy.add_entry(
+            parent_dn,
+            {
+                "objectClass": ["top", "group"],
+                "cn": "mail-office-parent",
+                "sAMAccountName": "mail-office-parent",
+                "description": "Authorized Secretariat Parent Group",
+                "member": [subteam_dn],
+            },
+        )
+        ad_conn.strategy.add_entry(
+            f"CN=DnsAdmins,CN=Users,{ad_base}",
+            {
+                "objectClass": ["top", "group"],
+                "cn": "DnsAdmins",
+                "sAMAccountName": "DnsAdmins",
+                "description": "DNS Administrators",
+            },
+        )
+        ad_conn.unbind()
+
+        def _ad_factory(_cfg: LdapSettings, bind_dn: str | None, bind_pw: str | None) -> Connection:
+            return Connection(
+                ad_server,
+                user=bind_dn,
+                password=bind_pw or "",
+                client_strategy=MOCK_SYNC,
+                auto_bind=False,
+            )
+
+        set_ldap_connection_factory(_ad_factory)
+
+        with TestClient(app) as client:
+            # 1a. Strict TLS verification (`rspamd_tls_verify=True`) MUST reject the self-signed certificate
+            strict_res = client.post(
+                "/api/internal/mail-tracking/test-rspamd",
+                headers=hdrs,
+                json={
+                    "rspamd_url": https_base_url,
+                    "rspamd_user": "admin",
+                    "rspamd_password": "Nethesis,1234",
+                    "rspamd_tls_verify": True,
+                },
+            )
+            assert strict_res.status_code == 200
+            assert strict_res.json()["ok"] is False
+
+            # 1b. Missing `rspamd_user` against Traefik Basic-Auth `/rspamd/` returns clear Basic Auth guidance
+            no_user_res = client.post(
+                "/api/internal/mail-tracking/test-rspamd",
+                headers=hdrs,
+                json={
+                    "rspamd_url": https_base_url,
+                    "rspamd_user": "",
+                    "rspamd_password": "Nethesis,1234",
+                    "rspamd_tls_verify": False,
+                },
+            )
+            assert no_user_res.status_code == 200
+            assert no_user_res.json()["ok"] is False
+            assert "basic" in no_user_res.json()["message"].lower() or "username" in no_user_res.json()["message"].lower()
+
+            # 1c. Default `rspamd_tls_verify=False` + `rspamd_user="admin"` + `#history` URL normalization succeeds 100%!
+            save_cfg = client.put(
+                "/api/internal/settings",
+                headers=hdrs,
+                json={
+                    "rspamd_url": https_base_url + "#history",
+                    "rspamd_user": "admin",
+                    "rspamd_password": "Nethesis,1234",
+                    "rspamd_tls_verify": False,
+                },
+            )
+            assert save_cfg.status_code == 200
+            read_cfg = client.get("/api/internal/settings", headers=hdrs).json()
+            assert read_cfg["rspamd_user"] == "admin"
+            assert read_cfg["rspamd_tls_verify"] is False
+            assert read_cfg["rspamd_password_set"] is True
+
+            ok_probe = client.post(
+                "/api/internal/mail-tracking/test-rspamd",
+                headers=hdrs,
+                json={
+                    "rspamd_url": https_base_url,
+                    "rspamd_user": "admin",
+                    "rspamd_password": "",
+                    "rspamd_tls_verify": False,
+                },
+            )
+            assert ok_probe.status_code == 200
+            assert ok_probe.json()["ok"] is True
+
+            search_res = client.post(
+                "/api/internal/mail-tracking/search",
+                headers=hdrs,
+                json={"action_filter": "all", "limit": 50},
+            )
+            assert search_res.status_code == 200
+            s_json = search_res.json()
+            assert s_json["rspamd_connected"] is True
+            assert any(e["message_id"] == "<tls-rsp-1@tls-check.de>" for e in s_json["entries"])
+
+            # 2. AD Custom UPN Login (`julia@custom-upn.de`) + Nested Group (`mail-office-parent`) + Primary Group (`Domain Users`)
+            login_res = client.post(
+                "/api/auth/login",
+                json={"username": "julia@custom-upn.de", "password": "JuliaAd!2026"},
+            )
+            assert login_res.status_code == 200, login_res.text
+            login_groups = set(login_res.json()["groups"])
+            assert "Domain Users" in login_groups
+            assert "SubTeam-Frontdesk" in login_groups
+            assert "mail-office-parent" in login_groups
+
+            # Verify bulk group resolution on `/api/mailboxes` and `is_system` / `member_count` on `/api/internal/groups`
+            mb_list = client.get("/api/mailboxes").json()["mailboxes"]
+            julia_mb = next(m for m in mb_list if m["user"] == "julia.empfang")
+            assert {"Domain Users", "SubTeam-Frontdesk", "mail-office-parent"}.issubset(
+                set(julia_mb.get("groups", []))
+            )
+
+            groups_resp = client.get("/api/internal/groups", headers=hdrs)
+            assert groups_resp.status_code == 200
+            g_items = groups_resp.json()["groups"] if isinstance(groups_resp.json(), dict) else groups_resp.json()
+            by_gname = {g["group"]: g for g in g_items}
+            assert by_gname["DnsAdmins"]["is_system"] is True
+            assert by_gname["Domain Users"]["is_system"] is False
+            assert by_gname["Domain Users"]["member_count"] >= 1
+            assert by_gname["mail-office-parent"]["is_system"] is False
+
+    finally:
+        https_rspamd.stop()
+
 

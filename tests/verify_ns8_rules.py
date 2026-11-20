@@ -47,6 +47,7 @@ EXPECTED_UI_MODULE_ACTIONS = {
     # Phase 1: Core config, mailboxes, vacation, templates & audit
     "configure-module",
     "get-configuration",
+    "discover-mail-instance",
     "list-mailboxes",
     "set-vacation",
     "get-templates",
@@ -893,9 +894,12 @@ def test_contract_cockpit_ui_to_imageroot_actions_and_schemas():
         "allowed_groups",
     }
     phase23_cfg_fields = {
+        "portal_enabled",
         "milter_enabled",
         "rspamd_url",
+        "rspamd_user",
         "rspamd_password",
+        "rspamd_tls_verify",
         "clear_rspamd_password",
         "digest_enabled",
         "digest_time",
@@ -914,13 +918,16 @@ def test_contract_cockpit_ui_to_imageroot_actions_and_schemas():
     )
     for ui_cfg_field in (
         "mail_module_uuid",
+        "portal_enabled",
         "portal_hostname",
         "lets_encrypt",
         "http2https",
         "allowed_groups",
         "milter_enabled",
         "rspamd_url",
+        "rspamd_user",
         "rspamd_password",
+        "rspamd_tls_verify",
         "digest_enabled",
         "digest_time",
         "timezone",
@@ -930,6 +937,9 @@ def test_contract_cockpit_ui_to_imageroot_actions_and_schemas():
         assert ui_cfg_field in settings_text, (
             f"Settings.vue missing `configure-module` field `{ui_cfg_field}`"
         )
+    assert "discover-mail-instance" in settings_text, (
+        "Settings.vue must call `discover-mail-instance` for live AD/LDAP group & Rspamd discovery"
+    )
 
     # Verify Signatures.vue renders both activation and rollback/reset Postfix Milter snippets
     signatures_vue_text = (UI_DIR / "src" / "views" / "Signatures.vue").read_text(
@@ -942,17 +952,18 @@ def test_contract_cockpit_ui_to_imageroot_actions_and_schemas():
         "Signatures.vue must display `milter_postfix_reset_snippet` rollback snippet"
     )
 
-    # 5. Check `get-configuration` output contract (Phases 1–3 + production hardening)
+    # 5. Check `get-configuration` & `discover-mail-instance` output contracts (v1.0.1+)
     get_cfg_schema_path = ACTIONS_DIR / "get-configuration" / "validate-output.json"
-    get_cfg_props = set(
-        json.loads(get_cfg_schema_path.read_text(encoding="utf-8")).get("properties", {}).keys()
-    )
+    get_cfg_schema_obj = json.loads(get_cfg_schema_path.read_text(encoding="utf-8"))
+    get_cfg_props = set(get_cfg_schema_obj.get("properties", {}).keys())
     get_cfg_script = (ACTIONS_DIR / "get-configuration" / "20read").read_text(encoding="utf-8")
     expected_get_cfg_fields = {
         "configured",
+        "portal_enabled",
         "mail_module_uuid",
         "mail_module_id",
         "user_domain",
+        "ldap_schema",
         "portal_hostname",
         "lets_encrypt",
         "http2https",
@@ -964,8 +975,11 @@ def test_contract_cockpit_ui_to_imageroot_actions_and_schemas():
         "milter_enabled",
         "milter_postfix_snippet",
         "milter_postfix_reset_snippet",
+        "discovered_rspamd_url",
         "rspamd_url",
+        "rspamd_user",
         "rspamd_password_set",
+        "rspamd_tls_verify",
         "digest_enabled",
         "digest_time",
         "timezone",
@@ -977,6 +991,42 @@ def test_contract_cockpit_ui_to_imageroot_actions_and_schemas():
     )
     for field in expected_get_cfg_fields:
         assert field in get_cfg_script, f"get-configuration/20read missing output field `{field}`"
+
+    # Check enriched `available_groups` item schema (`member_count` & `is_system`) on both get-configuration and discover-mail-instance
+    for act_with_groups in ("get-configuration", "discover-mail-instance"):
+        out_schema = json.loads(
+            (ACTIONS_DIR / act_with_groups / "validate-output.json").read_text(encoding="utf-8")
+        )
+        grp_items_props = (
+            out_schema.get("properties", {})
+            .get("available_groups", {})
+            .get("items", {})
+            .get("properties", {})
+        )
+        for gfield in ("group", "description", "member_count", "is_system"):
+            assert gfield in grp_items_props, (
+                f"{act_with_groups}/validate-output.json `available_groups.items` missing `{gfield}`"
+            )
+
+    disc_out_props = set(
+        json.loads(
+            (ACTIONS_DIR / "discover-mail-instance" / "validate-output.json").read_text(encoding="utf-8")
+        )
+        .get("properties", {})
+        .keys()
+    )
+    for dfield in (
+        "mail_module_uuid",
+        "mail_module_id",
+        "user_domain",
+        "ldap_schema",
+        "same_node",
+        "discovered_rspamd_url",
+        "available_groups",
+    ):
+        assert dfield in disc_out_props, (
+            f"discover-mail-instance/validate-output.json missing property `{dfield}`"
+        )
 
     # 6. Check `set-vacation` open-ended date compatibility
     set_vac_schema = json.loads(
@@ -1168,8 +1218,9 @@ def test_contract_imageroot_to_backend_internal_routes():
         # Extended settings
         ("GET", "/api/internal/settings"),
         ("PUT", "/api/internal/settings"),
-        # Phase 1 + clean uninstall
+        # Phase 1 + clean uninstall + directory groups
         ("GET", "/api/internal/mailboxes"),
+        ("GET", "/api/internal/groups"),
         ("PUT", "/api/internal/mailboxes/max.muster/vacation"),
         ("POST", "/api/internal/deactivate-all-vacations"),
         ("GET", "/api/internal/templates"),
@@ -1329,19 +1380,25 @@ def test_jsonschema_ui_inputs_and_live_backend_outputs(
     ui_payloads: dict[str, dict[str, Any]] = {
         "configure-module": {
             "mail_module_uuid": "11111111-2222-3333-4444-555555555555",
+            "portal_enabled": True,
             "portal_hostname": "mail-office.firma.de",
             "lets_encrypt": False,
             "http2https": True,
             "allowed_groups": ["mail-office"],
             "milter_enabled": True,
-            "rspamd_url": "http://127.0.0.1:11334",
+            "rspamd_url": "https://mail.firma.de/rspamd",
+            "rspamd_user": "admin",
             "rspamd_password": "",
+            "rspamd_tls_verify": False,
             "clear_rspamd_password": False,
             "digest_enabled": True,
             "digest_time": "07:30",
             "timezone": "Europe/Berlin",
             "admin_alert_email": "admin@firma.de",
             "portal_tracking_enabled": True,
+        },
+        "discover-mail-instance": {
+            "mail_module_uuid": "11111111-2222-3333-4444-555555555555",
         },
         "set-vacation": {
             "user": "max.muster",
@@ -1404,7 +1461,12 @@ def test_jsonschema_ui_inputs_and_live_backend_outputs(
             "date_to": "",
             "limit": 200,
         },
-        "test-rspamd": {"rspamd_url": "http://127.0.0.1:11334", "rspamd_password": ""},
+        "test-rspamd": {
+            "rspamd_url": "https://mail.firma.de/rspamd/",
+            "rspamd_user": "admin",
+            "rspamd_password": "secret",
+            "rspamd_tls_verify": False,
+        },
         "save-connector": {
             "id": None,
             "name": "Strato",
@@ -1439,6 +1501,22 @@ def test_jsonschema_ui_inputs_and_live_backend_outputs(
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         jsonschema.Draft7Validator.check_schema(schema)
         jsonschema.validate(instance=payload, schema=schema)
+
+    # Verify configure-module schema explicitly accepts empty `allowed_groups: []` AND Cockpit-only `portal_enabled: False, portal_hostname: ""`
+    cfg_schema = json.loads((ACTIONS_DIR / "configure-module" / "validate-input.json").read_text(encoding="utf-8"))
+    jsonschema.validate(
+        instance={**ui_payloads["configure-module"], "allowed_groups": []},
+        schema=cfg_schema,
+    )
+    jsonschema.validate(
+        instance={
+            **ui_payloads["configure-module"],
+            "portal_enabled": False,
+            "portal_hostname": "",
+            "allowed_groups": [],
+        },
+        schema=cfg_schema,
+    )
 
     # 2. Validate live FastAPI /api/internal/* responses against imageroot/actions/<action>/validate-output.json
     data_dir = tmp_path / "data"

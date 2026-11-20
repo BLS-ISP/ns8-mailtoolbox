@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+
+"""Live-discover Rspamd URL, LDAP/AD schema, and groups for a selected ns8-mail instance."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+# Allow importing shared toolbox_discovery helper from imageroot/bin (or ~/.config/bin at runtime)
+_BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
+if str(_BIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_BIN_DIR))
+
+import agent  # noqa: E402
+from toolbox_discovery import (  # noqa: E402
+    discover_available_mail_servers,
+    discover_domain_groups_and_schema,
+)
+
+
+def main() -> int:
+    requested_uuid = ""
+    try:
+        raw = sys.stdin.read().strip()
+        if raw:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                requested_uuid = str(parsed.get("mail_module_uuid") or "").strip()
+    except Exception:
+        requested_uuid = ""
+
+    if not requested_uuid:
+        requested_uuid = os.environ.get("MAIL_MODULE_UUID", "").strip()
+
+    try:
+        current_node_id = int(os.environ.get("NODE_ID", "0") or 0)
+    except ValueError:
+        current_node_id = 0
+
+    servers: list[dict[str, Any]] = []
+    try:
+        rdb = agent.redis_connect(use_replica=True)
+        servers = discover_available_mail_servers(rdb, current_node_id)
+    except Exception as exc:
+        print(f"Warning: Failed to list mail servers in discover-mail-instance: {exc}", file=sys.stderr)
+
+    selected: dict[str, Any] | None = None
+    if requested_uuid:
+        for srv in servers:
+            if srv["module_uuid"] == requested_uuid:
+                selected = srv
+                break
+    if selected is None and servers:
+        selected = servers[0]
+
+    if selected is None:
+        json.dump(
+            {
+                "mail_module_uuid": requested_uuid,
+                "mail_module_id": "",
+                "user_domain": "",
+                "ldap_schema": "",
+                "same_node": False,
+                "discovered_rspamd_url": "http://127.0.0.1:11334",
+                "available_groups": [],
+            },
+            sys.stdout,
+        )
+        return 0
+
+    mail_uuid = str(selected["module_uuid"])
+    mail_id = str(selected["module_id"])
+    user_domain = str(selected["user_domain"])
+    same_node = bool(selected["same_node"])
+    discovered_rspamd_url = str(selected.get("rspamd_url") or "http://127.0.0.1:11334")
+
+    ldap_schema, available_groups = discover_domain_groups_and_schema(
+        user_domain=user_domain,
+        mail_module_id=mail_id,
+    )
+
+    json.dump(
+        {
+            "mail_module_uuid": mail_uuid,
+            "mail_module_id": mail_id,
+            "user_domain": user_domain,
+            "ldap_schema": ldap_schema,
+            "same_node": same_node,
+            "discovered_rspamd_url": discovered_rspamd_url,
+            "available_groups": available_groups,
+        },
+        sys.stdout,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

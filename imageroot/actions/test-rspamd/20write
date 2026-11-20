@@ -1,46 +1,99 @@
 #!/usr/bin/env python3
 
-"""Test Rspamd Controller HTTP connectivity via POST /api/internal/mail-tracking/test-rspamd (with direct fallback before initial configure)."""
+"""Test Rspamd Controller HTTP/HTTPS connectivity via POST /api/internal/mail-tracking/test-rspamd (with self-signed TLS & Basic Auth direct fallback)."""
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import ssl
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 
+def _normalize_rspamd_base_url(raw_url: str | None) -> str:
+    if not raw_url:
+        return ""
+    cleaned = str(raw_url).strip()
+    if "#" in cleaned:
+        cleaned = cleaned.split("#", 1)[0]
+    if "?" in cleaned:
+        cleaned = cleaned.split("?", 1)[0]
+    cleaned = cleaned.rstrip("/")
+    if cleaned.lower().endswith("/history"):
+        cleaned = cleaned[: -len("/history")].rstrip("/")
+    return cleaned
+
+
 def _direct_rspamd_probe(state_dir: Path, payload: dict) -> dict:
     saved_pass = ""
+    saved_user = ""
     saved_url = "http://127.0.0.1:11334"
+    saved_tls_verify = False
     settings_path = state_dir / "config" / "toolbox_settings.json"
     if settings_path.is_file():
         try:
             saved = json.loads(settings_path.read_text(encoding="utf-8"))
             saved_pass = str(saved.get("rspamd_password") or "")
+            saved_user = str(saved.get("rspamd_user") or "")
             saved_url = str(saved.get("rspamd_url") or saved_url)
+            saved_tls_verify = bool(saved.get("rspamd_tls_verify", False))
         except Exception:
             pass
 
-    base_url = str(payload.get("rspamd_url") or saved_url or "http://127.0.0.1:11334").strip().rstrip("/")
+    base_url = (
+        _normalize_rspamd_base_url(payload.get("rspamd_url"))
+        or _normalize_rspamd_base_url(saved_url)
+        or "http://127.0.0.1:11334"
+    )
+    user = (
+        str(payload.get("rspamd_user") or "").strip()
+        if payload.get("rspamd_user") is not None
+        else saved_user
+    )
     password = str(payload.get("rspamd_password") or saved_pass or "")
+    tls_verify = (
+        bool(payload["rspamd_tls_verify"])
+        if payload.get("rspamd_tls_verify") is not None
+        else saved_tls_verify
+    )
+
     headers = {"Accept": "application/json"}
-    if password:
+    if user:
+        basic_token = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {basic_token}"
+    elif password:
         headers["Password"] = password
+
+    ssl_ctx = None
+    if base_url.lower().startswith("https://") and not tls_verify:
+        ssl_ctx = ssl._create_unverified_context()
 
     req = urllib.request.Request(f"{base_url}/history", headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            rows = data.get("rows", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            rows = (
+                data.get("rows", [])
+                if isinstance(data, dict)
+                else (data if isinstance(data, list) else [])
+            )
             return {
                 "ok": True,
                 "message": "Rspamd Controller reachable",
                 "entries_available": len(rows),
             }
     except urllib.error.HTTPError as exc:
+        www_auth = str(exc.headers.get("WWW-Authenticate") or "") if exc.headers else ""
+        if exc.code == 401 and "basic" in www_auth.lower() and not user:
+            return {
+                "ok": False,
+                "message": "Rspamd HTTPS route requires HTTP Basic Auth — please enter an NS8 admin username (e.g. admin) in Rspamd Username.",
+                "entries_available": 0,
+            }
         return {
             "ok": False,
             "message": f"Rspamd HTTP {exc.code}: {exc.reason}",
@@ -55,8 +108,11 @@ def _direct_rspamd_probe(state_dir: Path, payload: dict) -> dict:
 
 
 def main() -> int:
-    raw = sys.stdin.read().strip()
-    payload = json.loads(raw) if raw else {}
+    try:
+        raw = sys.stdin.read().strip()
+        payload = json.loads(raw) if raw else {}
+    except Exception:
+        payload = {}
 
     web_tcp_port = os.environ.get("WEB_TCP_PORT", "").strip()
     state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
@@ -80,8 +136,15 @@ def main() -> int:
                 return 0
         except urllib.error.HTTPError as exc:
             err_body = exc.read().decode("utf-8", errors="replace")
-            print(f"Backend HTTP {exc.code}: {err_body}", file=sys.stderr)
-            return 1
+            json.dump(
+                {
+                    "ok": False,
+                    "message": f"Backend HTTP {exc.code}: {err_body}",
+                    "entries_available": 0,
+                },
+                sys.stdout,
+            )
+            return 0
         except Exception:
             # Fall back to direct probe when container is not started yet (before initial configure)
             pass

@@ -470,6 +470,7 @@ class MockSmtpSubmissionServer:
             self._server = None
 
 
+
 # ============================================================================
 # 3. Mock IMAP4rev1 Server (Dovecot Master-User + External IMAP Connector)
 # ============================================================================
@@ -891,6 +892,7 @@ class MockImapServer:
             self._server = None
 
 
+
 # ============================================================================
 # 4. Mock POP3 Server (for External POP3 Connector E2E)
 # ============================================================================
@@ -1057,6 +1059,7 @@ class MockPop3Server:
             self._server = None
 
 
+
 # ============================================================================
 # 5. Mock Rspamd HTTP Controller
 # ============================================================================
@@ -1130,3 +1133,126 @@ class MockRspamdServer:
             self._server.shutdown()
             self._server.server_close()
             self._server = None
+
+
+class MockHttpsTraefikRspamdServer:
+    """HTTPS server with dynamically generated self-signed X.509 cert + Traefik HTTP Basic Auth at `/rspamd/*`."""
+
+    def __init__(
+        self,
+        username: str = "admin",
+        password: str = "Nethesis,1234",
+        rows: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.username = username
+        self.password = password
+        self.rows = list(rows or [])
+        self._server: ThreadingHTTPServer | None = None
+        self._tmpdir = None
+        self.host = "127.0.0.1"
+        self.port = 0
+
+    def start(self) -> str:
+        from datetime import datetime, timedelta, timezone
+        import ipaddress
+        import os
+        import ssl
+        import tempfile
+
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "mail.firma.de")])
+        now = datetime.now(timezone.utc)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(hours=1))
+            .not_valid_after(now + timedelta(days=2))
+            .add_extension(
+                x509.SubjectAlternativeName(
+                    [
+                        x509.DNSName("mail.firma.de"),
+                        x509.DNSName("localhost"),
+                        x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+                    ]
+                ),
+                critical=False,
+            )
+            .sign(key, hashes.SHA256())
+        )
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        cert_path = os.path.join(self._tmpdir.name, "cert.pem")
+        key_path = os.path.join(self._tmpdir.name, "key.pem")
+        with open(cert_path, "wb") as cf:
+            cf.write(cert.public_bytes(serialization.Encoding.PEM))
+        with open(key_path, "wb") as kf:
+            kf.write(
+                key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+            )
+
+        expected_basic = "Basic " + base64.b64encode(
+            f"{self.username}:{self.password}".encode("utf-8")
+        ).decode("ascii")
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, _format: str, *_args: Any) -> None:
+                return
+
+            def do_GET(self) -> None:  # noqa: N802
+                auth_hdr = self.headers.get("Authorization", "")
+                if auth_hdr != expected_basic:
+                    self.send_response(401)
+                    self.send_header("WWW-Authenticate", 'Basic realm="NS8 Traefik ForwardAuth"')
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"error": "Basic authentication required"}')
+                    return
+
+                clean_path = self.path.split("?", 1)[0]
+                if clean_path in {"/rspamd/history", "/history"}:
+                    payload = json.dumps({"rows": list(outer.rows)}).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(payload)
+                elif clean_path in {"/rspamd/ping", "/ping"}:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"pong\n")
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_ctx.load_cert_chain(certfile=cert_path, keyfile=key_path)
+
+        srv = ThreadingHTTPServer((self.host, 0), Handler)
+        srv.socket = ssl_ctx.wrap_socket(srv.socket, server_side=True)
+        self._server = srv
+        self.port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        return f"https://{self.host}:{self.port}/rspamd/"
+
+    def stop(self) -> None:
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+            self._server = None
+        if self._tmpdir is not None:
+            self._tmpdir.cleanup()
+            self._tmpdir = None
+

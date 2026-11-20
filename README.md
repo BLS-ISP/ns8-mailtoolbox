@@ -100,11 +100,11 @@ add-module ghcr.io/bls-isp/mail-toolbox:latest 1
 
 ## Configuration Guide
 
-### 1. Coupling `ns8-mail` & Secretariat Portal (`Settings`)
+### 1. Coupling `ns8-mail`, AD/LDAP Groups & Optional Secretariat Portal (`Settings`)
 Open **Applications -> Mail Toolbox -> Settings** in NS8 Cockpit:
-1. **Mail Server (`ns8-mail`):** Select your `ns8-mail` instance (co-located instances on the same node are highlighted as recommended).
-2. **Secretariat Portal Hostname:** Enter a dedicated FQDN (e.g. `mailoffice.example.com`) and enable **Let's Encrypt** and **HTTP to HTTPS**.
-3. **Authorized Secretariat Groups:** Select one or more AD/LDAP groups (e.g. `mail-office`) permitted to sign in to the Secretariat Web Portal.
+1. **Mail Server (`ns8-mail`) & Live Discovery:** Select your `ns8-mail` instance (co-located instances on the same node are highlighted as recommended). Switching mail instances automatically discovers the coupled user domain, real Active Directory / OpenLDAP groups (with resolved member counts and a filter hiding built-in Windows AD system groups by default), and the Rspamd endpoint URL even before saving for the first time.
+2. **Optional Secretariat Web Portal:** Keep the Traefik portal enabled and enter a dedicated FQDN (e.g. `mailoffice.example.com`) with **Let's Encrypt** and **HTTP to HTTPS**, or toggle `portal_enabled` off to operate in Cockpit-only mode without allocating a public virtual host.
+3. **Authorized Secretariat Groups & Nested AD Support:** Select zero or more AD/LDAP groups (leaving `allowed_groups` empty keeps Secretariat login disabled while preserving Cockpit management and public quarantine release links). Full Active Directory group semantics are supported out of the box: multi-level nested groups (`1.2.840.113556.1.4.1941` + iterative BFS graph traversal), AD Primary Groups (`primaryGroupID` / `objectSid` RIDs such as `Domain Users`), custom `userPrincipalName` (`user@upn.domain`), `DOMAIN\user`, and OpenLDAP `rfc2307` / `groupOfNames`.
 4. **Optional Portal Mail Tracking:** Enable *Allow read-only mail tracking search in Secretariat Portal* (`portal_tracking_enabled`) if secretariat staff should be able to look up incoming/outgoing delivery statuses.
 
 ### 2. Activating & Resetting the Before-DKIM Signature Milter (`Signatures`)
@@ -121,7 +121,7 @@ runagent -m mail1 python3 -c "import agent; agent.unset_env('POSTFIX_MILTERS'); 
 > **Multi-Node Note:** When `mail-toolbox` and `ns8-mail` run on different cluster nodes, `mail-toolbox` automatically binds `MILTER_TCP_PORT` to the node's internal NS8 WireGuard VPN IP (`MILTER_BIND_HOST`) instead of `127.0.0.1` and populates that exact VPN IP in the Cockpit snippet.
 
 ### 3. Rspamd Mail-Tracking, Quarantine Digest & Connectors
-- **Rspamd Controller Connection:** Enter the Rspamd Controller URL (`http://127.0.0.1:11334` when on the same node) and password in **Settings**, then click **Test Rspamd connection**.
+- **Rspamd Controller Auto-Discovery, Basic Auth & Self-Signed TLS:** `Mail Toolbox` automatically discovers the Rspamd URL from `ns8-mail` (such as `https://mail.example.com/rspamd` via Traefik `forward_auth` or `http://127.0.0.1:11334` locally), normalizes `/history` suffixes, accepts self-signed NS8 TLS certificates by default (`rspamd_tls_verify=false`), supports both Traefik HTTP Basic Auth (`rspamd_user` + `rspamd_password`) and direct `Password` headers, and includes split-DNS / hairpin-NAT fallback plus one-click connection testing.
 - **Daily Quarantine Digest:** Enable the daily digest schedule (`HH:MM` and IANA timezone, e.g. `07:30` / `Europe/Berlin`) or trigger an immediate run from **Mail Tracking -> Quarantine**.
 - **External POP3/IMAP Connectors:** Configure external accounts under **Connectors** (including quick presets for common providers, connection testing, manual sync, and `admin_alert_email` failure notifications).
 

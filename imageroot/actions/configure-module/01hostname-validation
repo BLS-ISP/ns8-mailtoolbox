@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Validate Traefik portal_hostname uniqueness and coupled mail_module_uuid availability."""
+"""Validate optional Traefik portal_hostname uniqueness and coupled mail_module_uuid availability."""
 
 from __future__ import annotations
 
@@ -29,20 +29,20 @@ def _fail_validation(field: str, value: str, error_code: str) -> None:
 
 def main() -> int:
     data = json.load(sys.stdin)
-    portal_hostname = str(data.get("portal_hostname", "")).strip().lower()
-    mail_module_uuid = str(data.get("mail_module_uuid", "")).strip()
+    portal_enabled = bool(data.get("portal_enabled", True))
+    portal_hostname = str(data.get("portal_hostname") or "").strip().lower()
+    mail_module_uuid = str(data.get("mail_module_uuid") or "").strip()
 
-    if not portal_hostname:
-        _fail_validation("portal_hostname", portal_hostname, "hostname_required")
-
-    current_hostname = os.environ.get("PORTAL_HOSTNAME", "").strip().lower()
-    if portal_hostname != current_hostname:
-        if agent.http_route_in_use(domain=portal_hostname):
-            _fail_validation(
-                "portal_hostname",
-                portal_hostname,
-                "hostname_already_in_use",
-            )
+    # Only validate Traefik route collisions when portal_enabled is True and a non-empty hostname is supplied
+    if portal_enabled and portal_hostname:
+        current_hostname = os.environ.get("PORTAL_HOSTNAME", "").strip().lower()
+        if portal_hostname != current_hostname:
+            if agent.http_route_in_use(domain=portal_hostname):
+                _fail_validation(
+                    "portal_hostname",
+                    portal_hostname,
+                    "hostname_already_in_use",
+                )
 
     if not mail_module_uuid:
         _fail_validation("mail_module_uuid", mail_module_uuid, "mail_server_required")

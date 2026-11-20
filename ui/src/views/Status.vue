@@ -129,8 +129,14 @@
         <NsInfoCard
           light
           :title="
-            configuration.configured && configuration.portal_hostname
+            configuration.configured &&
+            configuration.portal_enabled !== false &&
+            configuration.portal_hostname
               ? configuration.portal_hostname
+              : configuration.configured &&
+                (configuration.portal_enabled === false ||
+                  !configuration.portal_hostname)
+              ? $t('status.portal_disabled')
               : $t('status.not_configured')
           "
           :description="$t('status.secretariat_portal')"
@@ -142,7 +148,11 @@
           <template slot="content">
             <div class="card-extra-content">
               <div
-                v-if="configuration.configured && configuration.portal_hostname"
+                v-if="
+                  configuration.configured &&
+                  configuration.portal_enabled !== false &&
+                  configuration.portal_hostname
+                "
                 class="portal-link-row"
               >
                 <cv-link
@@ -157,6 +167,7 @@
               </div>
               <div
                 v-if="
+                  configuration.portal_enabled !== false &&
                   configuration.allowed_groups &&
                   configuration.allowed_groups.length
                 "
@@ -174,6 +185,15 @@
                     size="sm"
                   />
                 </div>
+              </div>
+              <div
+                v-else-if="
+                  configuration.configured &&
+                  configuration.portal_enabled === false
+                "
+                class="muted-note"
+              >
+                {{ $t("status.portal_cockpit_only_hint") }}
               </div>
               <div v-else class="muted-note">
                 {{ $t("status.no_groups_configured") }}

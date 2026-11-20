@@ -101,6 +101,18 @@
               marginBottomOnOpen
               ref="scope_value"
             />
+            <cv-checkbox
+              v-if="systemGroupsCount > 0"
+              value="showSigSystemGroups"
+              :label="
+                $t('settings.show_system_groups_label', {
+                  count: systemGroupsCount,
+                })
+              "
+              v-model="showSystemGroups"
+              :disabled="loading.saveSignature"
+              class="mg-top-xs"
+            />
           </div>
 
           <NsTextInput
@@ -349,6 +361,7 @@ export default {
         "{{#mobile}}Mobil: {{mobile}}{{/mobile}}",
       ],
       lastFocusedEditor: "html",
+      showSystemGroups: false,
       previewUser: "",
       previewResult: null,
       form: {
@@ -380,6 +393,11 @@ export default {
   },
   computed: {
     ...mapState(["instanceName", "core"]),
+    systemGroupsCount() {
+      return this.availableGroups.filter(
+        (item) => item && typeof item === "object" && item.is_system === true
+      ).length;
+    },
     groupOptions() {
       const opts = [];
       const seen = new Set();
@@ -388,10 +406,19 @@ export default {
         if (!g || seen.has(g)) {
           continue;
         }
+        const isSys = Boolean(item && item.is_system === true);
+        if (isSys && !this.showSystemGroups && this.form.scope_value !== g) {
+          continue;
+        }
         seen.add(g);
+        const hasCount =
+          item && item.member_count !== null && item.member_count !== undefined;
+        const countPart = hasCount ? ` (${item.member_count})` : "";
+        const descPart =
+          item && item.description ? ` — ${item.description}` : "";
         opts.push({
           name: g,
-          label: item && item.description ? `${g} — ${item.description}` : g,
+          label: `${g}${countPart}${descPart}`,
           value: g,
         });
       }
@@ -725,6 +752,10 @@ export default {
 
 .mg-top-sm {
   margin-top: $spacing-03;
+}
+
+.mg-top-xs {
+  margin-top: $spacing-02;
 }
 
 .grid-2col {

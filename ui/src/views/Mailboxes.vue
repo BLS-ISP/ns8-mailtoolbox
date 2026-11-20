@@ -177,10 +177,29 @@
                   </div>
                 </cv-data-table-cell>
 
-                <!-- Department -->
+                <!-- Department & AD/LDAP Groups -->
                 <cv-data-table-cell>
                   <div>{{ row.department || "-" }}</div>
                   <div v-if="row.title" class="emp-sub">{{ row.title }}</div>
+                  <div
+                    v-if="row.groups && row.groups.length"
+                    class="user-groups-wrap"
+                    :title="row.groups.join(', ')"
+                  >
+                    <NsTag
+                      v-for="grp in row.groups.slice(0, 3)"
+                      :key="grp"
+                      :label="grp"
+                      kind="cool-gray"
+                      size="sm"
+                    />
+                    <NsTag
+                      v-if="row.groups.length > 3"
+                      :label="'+' + (row.groups.length - 3)"
+                      kind="gray"
+                      size="sm"
+                    />
+                  </div>
                 </cv-data-table-cell>
 
                 <!-- Status Tags -->
@@ -369,7 +388,7 @@ export default {
         "department",
         "vacation",
         "aliases",
-        "actions",
+        "groups",
       ],
       selectedMailbox: null,
       isEditModalVisible: false,
@@ -736,6 +755,13 @@ export default {
   display: flex;
   flex-wrap: wrap;
   gap: $spacing-02;
+}
+
+.user-groups-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
 }
 
 .forward-entry {

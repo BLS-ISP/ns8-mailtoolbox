@@ -125,6 +125,7 @@ def build_base_mailbox_map(settings: AppSettings | None = None) -> dict[str, dic
             "aliases": aliases,
             "department": lu.department if lu else "",
             "title": lu.title if lu else "",
+            "groups": list(lu.groups) if lu else [],
             "enabled": bool(item.get("enabled", True)),
             "postfix_forwards": postfix_forwards,
         }
@@ -145,6 +146,7 @@ def build_base_mailbox_map(settings: AppSettings | None = None) -> dict[str, dic
             "aliases": [],
             "department": lu.department,
             "title": lu.title,
+            "groups": list(lu.groups),
             "enabled": True,
             "postfix_forwards": [],
         }
@@ -247,6 +249,7 @@ def list_mailboxes_with_status() -> dict[str, Any]:
                 "aliases": [],
                 "department": "",
                 "title": "",
+                "groups": [],
                 "enabled": True,
                 "postfix_forwards": [],
             }
@@ -388,6 +391,7 @@ def update_mailbox_vacation(
                 "aliases": [],
                 "department": "",
                 "title": "",
+                "groups": [],
                 "enabled": True,
                 "postfix_forwards": [],
             }

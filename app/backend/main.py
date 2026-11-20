@@ -52,6 +52,7 @@ from app.backend.ldap_client import (
     AuthForbiddenGroupError,
     AuthInvalidCredentialsError,
     authenticate_portal_user,
+    list_directory_groups,
 )
 from app.backend.milter_server import (
     MilterServer,
@@ -381,6 +382,14 @@ async def internal_list_mailboxes(
     return await asyncio.to_thread(list_mailboxes_with_status)
 
 
+@app.get("/api/internal/groups")
+async def internal_list_groups(
+    _token: str = Depends(require_internal_token),
+) -> dict[str, Any]:
+    groups = await asyncio.to_thread(list_directory_groups)
+    return {"groups": groups}
+
+
 @app.put("/api/internal/mailboxes/{user}/vacation", response_model=MailboxModel)
 async def internal_update_vacation(
     user: str,
@@ -614,7 +623,9 @@ async def internal_test_rspamd(
     return await asyncio.to_thread(
         test_rspamd_connection,
         rspamd_url=payload.rspamd_url,
+        rspamd_user=payload.rspamd_user,
         rspamd_password=payload.rspamd_password,
+        rspamd_tls_verify=payload.rspamd_tls_verify,
     )
 
 

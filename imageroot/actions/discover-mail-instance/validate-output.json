@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "discover-mail-instance output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/discover-mail-instance",
+  "description": "Discovered Rspamd URL, user domain, LDAP schema, and enriched AD/LDAP groups for an ns8-mail instance",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "mail_module_uuid",
+    "mail_module_id",
+    "user_domain",
+    "ldap_schema",
+    "same_node",
+    "discovered_rspamd_url",
+    "available_groups"
+  ],
+  "properties": {
+    "mail_module_uuid": {
+      "type": "string"
+    },
+    "mail_module_id": {
+      "type": "string"
+    },
+    "user_domain": {
+      "type": "string"
+    },
+    "ldap_schema": {
+      "type": "string"
+    },
+    "same_node": {
+      "type": "boolean"
+    },
+    "discovered_rspamd_url": {
+      "type": "string"
+    },
+    "available_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "group",
+          "description",
+          "member_count",
+          "is_system"
+        ],
+        "properties": {
+          "group": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "member_count": {
+            "type": ["integer", "null"]
+          },
+          "is_system": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}

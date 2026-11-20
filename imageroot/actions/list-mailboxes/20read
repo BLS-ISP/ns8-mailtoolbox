@@ -26,10 +26,9 @@ EMPTY_RESPONSE = {
 
 def main() -> int:
     mail_module_uuid = os.environ.get("MAIL_MODULE_UUID", "").strip()
-    portal_hostname = os.environ.get("PORTAL_HOSTNAME", "").strip()
     web_tcp_port = os.environ.get("WEB_TCP_PORT", "").strip()
 
-    if not mail_module_uuid or not portal_hostname or not web_tcp_port:
+    if not mail_module_uuid or not web_tcp_port:
         json.dump(EMPTY_RESPONSE, sys.stdout)
         return 0
 

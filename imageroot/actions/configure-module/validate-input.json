@@ -2,15 +2,11 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "configure-module input",
   "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/configure-module",
-  "description": "Configure coupled ns8-mail instance, Traefik portal hostname, authorized AD/LDAP groups, and Phase 2/3 Milter, Rspamd, Digest, Portal Tracking, and Connector alert settings",
+  "description": "Configure coupled ns8-mail instance, optional Traefik Secretariat Portal, AD/LDAP groups, and Phase 2/3 Milter, Rspamd (with Basic Auth & TLS verify), Digest, and Connector settings",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": [
-    "mail_module_uuid",
-    "portal_hostname",
-    "lets_encrypt",
-    "http2https",
-    "allowed_groups"
+    "mail_module_uuid"
   ],
   "properties": {
     "mail_module_uuid": {
@@ -18,11 +14,21 @@
       "minLength": 1,
       "description": "UUID of the coupled ns8-mail module instance"
     },
+    "portal_enabled": {
+      "type": "boolean",
+      "description": "Publish the Secretariat & Quarantine Web Portal via Traefik (default true)"
+    },
     "portal_hostname": {
-      "type": "string",
-      "minLength": 1,
-      "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$",
-      "description": "FQDN for the delegated Secretariat Web Portal behind Traefik"
+      "description": "FQDN for the Secretariat Web Portal behind Traefik, or empty string when portal_enabled is false",
+      "anyOf": [
+        {
+          "const": ""
+        },
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
+        }
+      ]
     },
     "lets_encrypt": {
       "type": "boolean",
@@ -34,10 +40,9 @@
     },
     "allowed_groups": {
       "type": "array",
-      "description": "LDAP/AD groups permitted to sign in to the Secretariat Web Portal",
+      "description": "LDAP/AD groups permitted to sign in to the Secretariat Web Portal (empty list disables portal login while keeping Cockpit & public quarantine release active)",
       "items": {
-        "type": "string",
-        "minLength": 1
+        "type": "string"
       }
     },
     "portal_tracking_enabled": {
@@ -50,15 +55,23 @@
     },
     "rspamd_url": {
       "type": "string",
-      "description": "Rspamd Controller HTTP base URL (default http://127.0.0.1:11334)"
+      "description": "Rspamd Controller base URL (e.g. https://mail.example.com/rspamd or http://127.0.0.1:11334)"
+    },
+    "rspamd_user": {
+      "type": "string",
+      "description": "Optional HTTP Basic Auth username (e.g. NS8 admin user) for Traefik-protected /rspamd routes"
     },
     "rspamd_password": {
       "type": "string",
-      "description": "Rspamd Controller password (empty preserves existing saved password unless clear_rspamd_password is true)"
+      "description": "Rspamd password or Basic Auth password (empty preserves existing saved password unless clear_rspamd_password is true)"
     },
     "clear_rspamd_password": {
       "type": "boolean",
-      "description": "Explicitly clear the saved Rspamd Controller password"
+      "description": "Explicitly clear the saved Rspamd password"
+    },
+    "rspamd_tls_verify": {
+      "type": "boolean",
+      "description": "Verify TLS certificates when connecting to HTTPS Rspamd endpoints (default false for self-signed NS8 certificates)"
     },
     "digest_enabled": {
       "type": "boolean",

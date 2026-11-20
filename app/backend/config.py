@@ -149,7 +149,9 @@ class ToolboxRuntimeSettings:
     milter_listen_port: int = 8090
     milter_host_port: int = 8090
     rspamd_url: str = "http://127.0.0.1:11334"
+    rspamd_user: str = ""
     rspamd_password: str = ""
+    rspamd_tls_verify: bool = False
     digest_enabled: bool = False
     digest_time: str = "07:30"
     timezone: str = "Europe/Berlin"
@@ -238,10 +240,21 @@ def load_runtime_settings(config_dir: Path | None = None) -> ToolboxRuntimeSetti
         or os.environ.get("RSPAMD_URL")
         or "http://127.0.0.1:11334"
     ).strip()
+    rspamd_user = (
+        str(persisted["rspamd_user"]).strip()
+        if "rspamd_user" in persisted
+        else os.environ.get("RSPAMD_USER", "").strip()
+    )
     rspamd_password = (
         str(persisted["rspamd_password"])
         if "rspamd_password" in persisted
         else os.environ.get("RSPAMD_PASSWORD", "")
+    )
+    env_rspamd_tls_verify = _parse_bool(os.environ.get("RSPAMD_TLS_VERIFY"), False)
+    rspamd_tls_verify = (
+        _parse_bool(persisted["rspamd_tls_verify"], env_rspamd_tls_verify)
+        if "rspamd_tls_verify" in persisted
+        else env_rspamd_tls_verify
     )
 
     env_digest = _parse_bool(os.environ.get("DIGEST_ENABLED"), False)
@@ -274,7 +287,9 @@ def load_runtime_settings(config_dir: Path | None = None) -> ToolboxRuntimeSetti
         milter_listen_port=listen_port,
         milter_host_port=host_port,
         rspamd_url=rspamd_url,
+        rspamd_user=rspamd_user,
         rspamd_password=rspamd_password,
+        rspamd_tls_verify=rspamd_tls_verify,
         digest_enabled=digest_enabled,
         digest_time=digest_time,
         timezone=tz_name,
@@ -302,6 +317,11 @@ def update_runtime_settings(
         if updates.get("rspamd_url") is not None and str(updates["rspamd_url"]).strip()
         else current.rspamd_url
     )
+    rspamd_user = (
+        str(updates["rspamd_user"]).strip()
+        if updates.get("rspamd_user") is not None
+        else current.rspamd_user
+    )
 
     clear_pw = bool(updates.get("clear_rspamd_password", False))
     incoming_pw = updates.get("rspamd_password")
@@ -311,6 +331,12 @@ def update_runtime_settings(
         rspamd_password = str(incoming_pw)
     else:
         rspamd_password = current.rspamd_password
+
+    rspamd_tls_verify = (
+        bool(updates["rspamd_tls_verify"])
+        if updates.get("rspamd_tls_verify") is not None
+        else current.rspamd_tls_verify
+    )
 
     digest_enabled = (
         bool(updates["digest_enabled"])
@@ -341,7 +367,9 @@ def update_runtime_settings(
     payload = {
         "milter_enabled": milter_enabled,
         "rspamd_url": rspamd_url,
+        "rspamd_user": rspamd_user,
         "rspamd_password": rspamd_password,
+        "rspamd_tls_verify": rspamd_tls_verify,
         "digest_enabled": digest_enabled,
         "digest_time": digest_time,
         "timezone": tz_name,
@@ -365,7 +393,9 @@ def format_public_runtime_settings(rt: ToolboxRuntimeSettings | None = None) -> 
     return {
         "milter_enabled": runtime.milter_enabled,
         "rspamd_url": runtime.rspamd_url,
+        "rspamd_user": runtime.rspamd_user,
         "rspamd_password_set": bool(runtime.rspamd_password),
+        "rspamd_tls_verify": runtime.rspamd_tls_verify,
         "digest_enabled": runtime.digest_enabled,
         "digest_time": runtime.digest_time,
         "timezone": runtime.timezone,

@@ -34,13 +34,12 @@ def _unconfigured_response() -> dict:
 
 def main() -> int:
     mail_module_uuid = os.environ.get("MAIL_MODULE_UUID", "").strip()
-    portal_hostname = os.environ.get("PORTAL_HOSTNAME", "").strip()
     web_tcp_port = os.environ.get("WEB_TCP_PORT", "").strip()
 
     state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
     token_path = state_dir / "config" / "internal.token"
 
-    if not mail_module_uuid or not portal_hostname or not web_tcp_port or not token_path.is_file():
+    if not mail_module_uuid or not web_tcp_port or not token_path.is_file():
         json.dump(_unconfigured_response(), sys.stdout)
         return 0
 

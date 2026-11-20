@@ -2,15 +2,21 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "test-rspamd input",
   "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/test-rspamd",
-  "description": "Test connectivity and authentication against Rspamd Controller HTTP API",
+  "description": "Test connectivity and authentication against Rspamd Controller HTTP/HTTPS API (supports Traefik HTTP Basic Auth and self-signed TLS certificates)",
   "type": "object",
   "additionalProperties": true,
   "properties": {
     "rspamd_url": {
       "type": ["string", "null"]
     },
+    "rspamd_user": {
+      "type": ["string", "null"]
+    },
     "rspamd_password": {
       "type": ["string", "null"]
+    },
+    "rspamd_tls_verify": {
+      "type": ["boolean", "null"]
     }
   }
 }

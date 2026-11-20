@@ -17,6 +17,17 @@
       </cv-column>
     </cv-row>
 
+    <cv-row v-if="error.discoverMailInstance">
+      <cv-column>
+        <NsInlineNotification
+          kind="error"
+          :title="$t('action.discover-mail-instance')"
+          :description="error.discoverMailInstance"
+          :showCloseButton="false"
+        />
+      </cv-column>
+    </cv-row>
+
     <cv-row v-if="savedConfigurationNotice">
       <cv-column>
         <NsInlineNotification
@@ -57,129 +68,201 @@
               {{ $t("settings.section_core_portal") }}
             </h4>
 
-            <!-- Coupled ns8-mail Instance -->
-            <NsComboBox
-              v-model="mail_module_uuid"
-              :title="$t('settings.mail_server_label')"
-              :label="$t('settings.mail_server_placeholder')"
-              :helperText="mailServerHelperText"
-              :invalidMessage="error.mail_module_uuid"
-              :autoFilter="true"
-              :autoHighlight="true"
-              :options="mailServerOptions"
-              :disabled="stillLoading || !mailServerOptions.length"
-              marginBottomOnOpen
-              class="mg-bottom"
-              ref="mail_module_uuid"
-            />
-
-            <!-- Secretariat Web Portal FQDN -->
-            <NsTextInput
-              :label="$t('settings.portal_hostname_label')"
-              :placeholder="$t('settings.portal_hostname_placeholder')"
-              :helperText="$t('settings.portal_hostname_helper')"
-              v-model.trim="portal_hostname"
-              :invalidMessage="error.portal_hostname"
-              :disabled="stillLoading"
-              class="mg-bottom"
-              ref="portal_hostname"
-            />
-
-            <!-- Let's Encrypt Toggle -->
-            <NsToggle
-              value="letsEncrypt"
-              :label="
-                coreT(
-                  'apps_lets_encrypt.request_https_certificate',
-                  'settings.lets_encrypt_label'
-                )
-              "
-              v-model="lets_encrypt"
-              :disabled="stillLoading"
-              class="mg-bottom"
-            >
-              <template slot="tooltip">
-                <span>{{ $t("settings.lets_encrypt_tooltip") }}</span>
-              </template>
-              <template slot="text-left">{{ $t("common.disabled") }}</template>
-              <template slot="text-right">{{ $t("common.enabled") }}</template>
-            </NsToggle>
-
-            <!-- HTTP to HTTPS Toggle -->
-            <NsToggle
-              value="http2https"
-              :label="$t('settings.http2https_label')"
-              v-model="http2https"
-              :disabled="stillLoading"
-              class="mg-bottom"
-            >
-              <template slot="tooltip">
-                <span>{{ $t("settings.http2https_tooltip") }}</span>
-              </template>
-              <template slot="text-left">{{ $t("common.disabled") }}</template>
-              <template slot="text-right">{{ $t("common.enabled") }}</template>
-            </NsToggle>
-
-            <!-- Allowed Secretariat AD/LDAP Groups -->
-            <NsMultiSelect
-              v-model="allowed_groups"
-              :options="groupOptions"
-              :title="$t('settings.allowed_groups_label')"
-              :label="$t('settings.allowed_groups_placeholder')"
-              :helperText="$t('settings.allowed_groups_helper')"
-              :invalidMessage="error.allowed_groups"
-              :filterable="true"
-              :autoFilter="true"
-              :autoHighlight="true"
-              :acceptUserInput="true"
-              :userInputLabel="$t('settings.custom_group_label')"
-              :selectedLabel="$t('settings.selected_label')"
-              :clearFilterLabel="$t('common.clear_search')"
-              :disabled="stillLoading"
-              marginBottomOnOpen
-              class="mg-bottom-sm"
-              ref="allowed_groups"
-            />
-
-            <!-- Custom Group Quick Entry -->
-            <div class="custom-group-row mg-bottom">
-              <div class="custom-group-input">
-                <NsTextInput
-                  :label="$t('settings.add_custom_group_label')"
-                  :placeholder="$t('settings.add_custom_group_placeholder')"
-                  v-model.trim="customGroupInput"
-                  :disabled="stillLoading"
-                  @keydown.enter.prevent="addCustomGroup"
+            <!-- Coupled ns8-mail Instance + Reload Discovery Button -->
+            <div class="mail-discovery-row mg-bottom-sm">
+              <div class="mail-select-col">
+                <NsComboBox
+                  v-model="mail_module_uuid"
+                  :title="$t('settings.mail_server_label')"
+                  :label="$t('settings.mail_server_placeholder')"
+                  :helperText="mailServerHelperText"
+                  :invalidMessage="error.mail_module_uuid"
+                  :autoFilter="true"
+                  :autoHighlight="true"
+                  :options="mailServerOptions"
+                  :disabled="stillLoading || !mailServerOptions.length"
+                  marginBottomOnOpen
+                  @change="onMailServerChange"
+                  ref="mail_module_uuid"
                 />
               </div>
               <NsButton
                 type="button"
                 kind="tertiary"
                 size="field"
-                :icon="Add20"
-                :disabled="stillLoading || !customGroupInput"
-                @click="addCustomGroup"
+                :icon="Renew20"
+                :loading="loading.discoverMailInstance"
+                :disabled="stillLoading || !mail_module_uuid"
+                @click="discoverMailInstance(mail_module_uuid)"
               >
-                {{ $t("settings.add_group_btn") }}
+                {{ $t("settings.reload_discovery_btn") }}
               </NsButton>
             </div>
 
-            <!-- Read-Only Mail-Tracking in Secretariat Portal -->
+            <!-- Live Discovered Domain & Group Count Info Strip -->
+            <div v-if="effectiveUserDomain" class="domain-info-strip mg-bottom">
+              <NsTag
+                :label="
+                  $t('settings.discovered_domain_badge', {
+                    domain: effectiveUserDomain,
+                    schema: formattedLdapSchema,
+                    count: nonSystemGroupsCount,
+                  })
+                "
+                kind="cyan"
+                size="sm"
+              />
+            </div>
+
+            <!-- Optional Traefik Secretariat & Quarantine Web Portal Toggle -->
             <NsToggle
-              value="portalTrackingEnabled"
-              :label="$t('settings.portal_tracking_enabled_label')"
-              v-model="portal_tracking_enabled"
+              value="portalEnabled"
+              :label="$t('settings.portal_enabled_label')"
+              v-model="portal_enabled"
               :disabled="stillLoading"
               class="mg-bottom"
             >
               <template slot="tooltip">
-                <span>{{
-                  $t("settings.portal_tracking_enabled_tooltip")
-                }}</span>
+                <span>{{ $t("settings.portal_enabled_tooltip") }}</span>
               </template>
               <template slot="text-left">{{ $t("common.disabled") }}</template>
               <template slot="text-right">{{ $t("common.enabled") }}</template>
             </NsToggle>
+
+            <NsInlineNotification
+              v-if="!portal_enabled && digest_enabled"
+              kind="warning"
+              :title="$t('settings.portal_disabled_digest_warn_title')"
+              :description="
+                $t('settings.portal_disabled_digest_warn_description')
+              "
+              :showCloseButton="false"
+              class="mg-bottom"
+            />
+
+            <template v-if="portal_enabled">
+              <!-- Secretariat Web Portal FQDN -->
+              <NsTextInput
+                :label="$t('settings.portal_hostname_label')"
+                :placeholder="$t('settings.portal_hostname_placeholder')"
+                :helperText="$t('settings.portal_hostname_helper')"
+                v-model.trim="portal_hostname"
+                :invalidMessage="error.portal_hostname"
+                :disabled="stillLoading"
+                class="mg-bottom"
+                ref="portal_hostname"
+              />
+
+              <!-- Let's Encrypt Toggle -->
+              <NsToggle
+                value="letsEncrypt"
+                :label="
+                  coreT(
+                    'apps_lets_encrypt.request_https_certificate',
+                    'settings.lets_encrypt_label'
+                  )
+                "
+                v-model="lets_encrypt"
+                :disabled="stillLoading"
+                class="mg-bottom"
+              >
+                <template slot="tooltip">
+                  <span>{{ $t("settings.lets_encrypt_tooltip") }}</span>
+                </template>
+                <template slot="text-left">{{
+                  $t("common.disabled")
+                }}</template>
+                <template slot="text-right">{{
+                  $t("common.enabled")
+                }}</template>
+              </NsToggle>
+
+              <!-- HTTP to HTTPS Toggle -->
+              <NsToggle
+                value="http2https"
+                :label="$t('settings.http2https_label')"
+                v-model="http2https"
+                :disabled="stillLoading"
+                class="mg-bottom"
+              >
+                <template slot="tooltip">
+                  <span>{{ $t("settings.http2https_tooltip") }}</span>
+                </template>
+                <template slot="text-left">{{
+                  $t("common.disabled")
+                }}</template>
+                <template slot="text-right">{{
+                  $t("common.enabled")
+                }}</template>
+              </NsToggle>
+
+              <!-- Allowed Secretariat AD/LDAP Groups (Optional!) -->
+              <NsMultiSelect
+                v-model="allowed_groups"
+                :options="groupOptions"
+                :title="$t('settings.allowed_groups_label')"
+                :label="$t('settings.allowed_groups_placeholder')"
+                :helperText="$t('settings.allowed_groups_helper')"
+                :invalidMessage="error.allowed_groups"
+                :filterable="true"
+                :autoFilter="true"
+                :autoHighlight="true"
+                :acceptUserInput="true"
+                :showSelectedItems="true"
+                :userInputLabel="$t('settings.custom_group_label')"
+                :selectedLabel="$t('settings.selected_label')"
+                :clearFilterLabel="$t('common.clear_search')"
+                :disabled="stillLoading"
+                marginBottomOnOpen
+                class="mg-bottom-xs"
+                ref="allowed_groups"
+              />
+
+              <cv-checkbox
+                v-if="systemGroupsCount > 0"
+                value="showSystemGroups"
+                :label="
+                  $t('settings.show_system_groups_label', {
+                    count: systemGroupsCount,
+                  })
+                "
+                v-model="showSystemGroups"
+                :disabled="stillLoading"
+                class="mg-bottom-sm"
+              />
+
+              <NsInlineNotification
+                v-if="!allowed_groups.length"
+                kind="info"
+                :title="$t('settings.empty_allowed_groups_info_title')"
+                :description="
+                  $t('settings.empty_allowed_groups_info_description')
+                "
+                :showCloseButton="false"
+                class="mg-bottom"
+              />
+
+              <!-- Read-Only Mail-Tracking in Secretariat Portal -->
+              <NsToggle
+                value="portalTrackingEnabled"
+                :label="$t('settings.portal_tracking_enabled_label')"
+                v-model="portal_tracking_enabled"
+                :disabled="stillLoading"
+                class="mg-bottom"
+              >
+                <template slot="tooltip">
+                  <span>{{
+                    $t("settings.portal_tracking_enabled_tooltip")
+                  }}</span>
+                </template>
+                <template slot="text-left">{{
+                  $t("common.disabled")
+                }}</template>
+                <template slot="text-right">{{
+                  $t("common.enabled")
+                }}</template>
+              </NsToggle>
+            </template>
 
             <!-- Phase 2: Before-DKIM Signature Milter -->
             <h4 class="section-heading">
@@ -205,13 +288,53 @@
             </h4>
             <NsTextInput
               :label="$t('settings.rspamd_url_label')"
-              placeholder="http://127.0.0.1:11334"
+              :placeholder="
+                effectiveDiscoveredRspamdUrl ||
+                'https://mail.example.org/rspamd'
+              "
               :helperText="$t('settings.rspamd_url_helper')"
               v-model.trim="rspamd_url"
               :invalidMessage="error.rspamd_url"
               :disabled="stillLoading"
-              class="mg-bottom-sm"
+              class="mg-bottom-xs"
               ref="rspamd_url"
+            />
+
+            <!-- Quick-Fill Mode Pills for Rspamd URL -->
+            <div class="rspamd-quick-btns mg-bottom-sm">
+              <cv-button
+                v-if="effectiveDiscoveredRspamdUrl"
+                type="button"
+                size="small"
+                kind="ghost"
+                :disabled="stillLoading"
+                @click="useDiscoveredRspamdUrl"
+              >
+                {{
+                  $t("settings.use_discovered_rspamd_btn", {
+                    url: effectiveDiscoveredRspamdUrl,
+                  })
+                }}
+              </cv-button>
+              <cv-button
+                type="button"
+                size="small"
+                kind="ghost"
+                :disabled="stillLoading"
+                @click="useLocalDirectRspamdUrl"
+              >
+                {{ $t("settings.use_local_rspamd_btn") }}
+              </cv-button>
+            </div>
+
+            <!-- Rspamd / NS8 Admin Username for HTTPS Traefik forward_auth -->
+            <NsTextInput
+              :label="$t('settings.rspamd_user_label')"
+              :placeholder="$t('settings.rspamd_user_placeholder')"
+              :helperText="$t('settings.rspamd_user_helper')"
+              v-model.trim="rspamd_user"
+              :disabled="stillLoading"
+              class="mg-bottom-sm"
             />
 
             <NsTextInput
@@ -240,6 +363,25 @@
               :disabled="stillLoading"
               class="mg-bottom-sm"
             />
+
+            <!-- Self-Signed TLS Verification Toggle (Default OFF for NS8 Self-Signed Certs) -->
+            <NsToggle
+              value="rspamdTlsVerify"
+              :label="$t('settings.rspamd_tls_verify_label')"
+              v-model="rspamd_tls_verify"
+              :disabled="stillLoading"
+              class="mg-bottom-sm"
+            >
+              <template slot="tooltip">
+                <span>{{ $t("settings.rspamd_tls_verify_tooltip") }}</span>
+              </template>
+              <template slot="text-left">{{
+                $t("settings.tls_allow_self_signed")
+              }}</template>
+              <template slot="text-right">{{
+                $t("settings.tls_strict_verify")
+              }}</template>
+            </NsToggle>
 
             <div class="mg-bottom">
               <NsButton
@@ -370,7 +512,7 @@ import {
   PageTitleService,
 } from "@nethserver/ns8-ui-lib";
 import Save20 from "@carbon/icons-vue/es/save/20";
-import Add20 from "@carbon/icons-vue/es/add/20";
+import Renew20 from "@carbon/icons-vue/es/renew/20";
 import Checkmark20 from "@carbon/icons-vue/es/checkmark/20";
 
 export default {
@@ -388,40 +530,49 @@ export default {
   data() {
     return {
       Save20,
-      Add20,
+      Renew20,
       Checkmark20,
       q: {
         page: "settings",
       },
       urlCheckInterval: null,
+      isModuleConfigured: false,
       mail_module_uuid: "",
+      portal_enabled: true,
       portal_hostname: "",
       lets_encrypt: false,
       http2https: true,
       allowed_groups: [],
+      showSystemGroups: false,
       portal_tracking_enabled: false,
       milter_enabled: true,
-      rspamd_url: "http://127.0.0.1:11334",
+      discovered_rspamd_url: "",
+      ldap_schema: "",
+      discoveredUserDomain: "",
+      rspamd_url: "",
+      rspamd_user: "",
       rspamd_password: "",
       rspamdPasswordSet: false,
       clear_rspamd_password: false,
+      rspamd_tls_verify: false,
       digest_enabled: false,
       digest_time: "07:30",
       timezone: "Europe/Berlin",
       admin_alert_email: "",
       availableMailServers: [],
       availableGroups: [],
-      customGroupInput: "",
       validationErrorDetails: [],
       savedConfigurationNotice: "",
       rspamdTestResult: null,
       loading: {
         getConfiguration: false,
+        discoverMailInstance: false,
         configureModule: false,
         testRspamd: false,
       },
       error: {
         getConfiguration: "",
+        discoverMailInstance: "",
         configureModule: "",
         mail_module_uuid: "",
         portal_hostname: "",
@@ -459,6 +610,29 @@ export default {
         ) || null
       );
     },
+    effectiveUserDomain() {
+      return (
+        this.discoveredUserDomain ||
+        (this.selectedMailServer && this.selectedMailServer.user_domain) ||
+        ""
+      );
+    },
+    formattedLdapSchema() {
+      if (this.ldap_schema === "ad") {
+        return "Active Directory";
+      }
+      if (this.ldap_schema === "rfc2307") {
+        return "OpenLDAP";
+      }
+      return "LDAP/AD";
+    },
+    effectiveDiscoveredRspamdUrl() {
+      return (
+        this.discovered_rspamd_url ||
+        (this.selectedMailServer && this.selectedMailServer.rspamd_url) ||
+        ""
+      );
+    },
     mailServerHelperText() {
       if (this.selectedMailServer && this.selectedMailServer.same_node) {
         return this.$t("settings.same_node_hint", {
@@ -472,6 +646,16 @@ export default {
       }
       return this.$t("settings.mail_server_helper");
     },
+    systemGroupsCount() {
+      return this.availableGroups.filter(
+        (item) => item && typeof item === "object" && item.is_system === true
+      ).length;
+    },
+    nonSystemGroupsCount() {
+      return this.availableGroups.filter(
+        (item) => !(item && typeof item === "object" && item.is_system === true)
+      ).length;
+    },
     groupOptions() {
       const seen = new Set();
       const opts = [];
@@ -481,25 +665,25 @@ export default {
         if (!grp || seen.has(grp)) {
           continue;
         }
+        const isSys = Boolean(item && item.is_system === true);
+        if (
+          isSys &&
+          !this.showSystemGroups &&
+          !this.allowed_groups.includes(grp)
+        ) {
+          continue;
+        }
         seen.add(grp);
-        const desc =
-          item && item.description ? `${grp} — ${item.description}` : grp;
+        const hasCount =
+          item && item.member_count !== null && item.member_count !== undefined;
+        const countPart = hasCount ? ` (${item.member_count})` : "";
+        const descPart =
+          item && item.description ? ` — ${item.description}` : "";
         opts.push({
           name: grp,
-          label: desc,
+          label: `${grp}${countPart}${descPart}`,
           value: grp,
         });
-      }
-
-      if (!opts.length) {
-        for (const suggested of ["mail-office", "sekretariat"]) {
-          seen.add(suggested);
-          opts.push({
-            name: suggested,
-            label: suggested,
-            value: suggested,
-          });
-        }
       }
 
       for (const selected of this.allowed_groups) {
@@ -536,16 +720,84 @@ export default {
       }
       return this.$t(fallbackKey);
     },
-    addCustomGroup() {
-      const cleaned = (this.customGroupInput || "").trim();
-      if (!cleaned) {
+    useDiscoveredRspamdUrl() {
+      if (this.effectiveDiscoveredRspamdUrl) {
+        this.rspamd_url = this.effectiveDiscoveredRspamdUrl;
+        this.rspamd_tls_verify = false;
+        this.error.rspamd_url = "";
+      }
+    },
+    useLocalDirectRspamdUrl() {
+      this.rspamd_url = "http://127.0.0.1:11334";
+      this.rspamd_user = "";
+      this.rspamd_tls_verify = false;
+      this.error.rspamd_url = "";
+    },
+    onMailServerChange(newUuid) {
+      if (newUuid) {
+        this.discoverMailInstance(newUuid);
+      }
+    },
+    async discoverMailInstance(targetUuid) {
+      if (!targetUuid) {
         return;
       }
-      if (!this.allowed_groups.includes(cleaned)) {
-        this.allowed_groups = [...this.allowed_groups, cleaned];
+      this.loading.discoverMailInstance = true;
+      this.error.discoverMailInstance = "";
+      const taskAction = "discover-mail-instance";
+      const eventId = this.getUuid();
+      const prevDiscoveredUrl = this.effectiveDiscoveredRspamdUrl;
+
+      this.core.$root.$once(`${taskAction}-aborted-${eventId}`, () => {
+        this.loading.discoverMailInstance = false;
+        this.error.discoverMailInstance = this.$t("error.generic_error");
+      });
+      this.core.$root.$once(
+        `${taskAction}-completed-${eventId}`,
+        (taskContext, taskResult) => {
+          this.loading.discoverMailInstance = false;
+          const out = (taskResult && taskResult.output) || {};
+          if (Array.isArray(out.available_groups)) {
+            this.availableGroups = out.available_groups;
+          }
+          if (out.user_domain !== undefined) {
+            this.discoveredUserDomain = out.user_domain || "";
+          }
+          if (out.ldap_schema !== undefined) {
+            this.ldap_schema = out.ldap_schema || "";
+          }
+          if (out.discovered_rspamd_url) {
+            this.discovered_rspamd_url = out.discovered_rspamd_url;
+            if (
+              !this.isModuleConfigured ||
+              !this.rspamd_url ||
+              this.rspamd_url === prevDiscoveredUrl
+            ) {
+              this.rspamd_url = out.discovered_rspamd_url;
+              this.rspamd_tls_verify = false;
+            }
+          }
+        }
+      );
+
+      const res = await to(
+        this.createModuleTaskForApp(this.instanceName, {
+          action: "discover-mail-instance",
+          data: {
+            mail_module_uuid: targetUuid,
+          },
+          extra: {
+            title: this.$t("action." + taskAction),
+            isNotificationHidden: true,
+            eventId,
+          },
+        })
+      );
+      const err = res[0];
+      if (err) {
+        this.loading.discoverMailInstance = false;
+        this.error.discoverMailInstance = this.getErrorMessage(err);
       }
-      this.customGroupInput = "";
-      this.error.allowed_groups = "";
     },
     async getConfiguration() {
       this.loading.getConfiguration = true;
@@ -587,6 +839,7 @@ export default {
     },
     getConfigurationCompleted(taskContext, taskResult) {
       const config = taskResult.output || {};
+      this.isModuleConfigured = Boolean(config.configured);
       this.availableMailServers = Array.isArray(config.available_mail_servers)
         ? config.available_mail_servers
         : [];
@@ -605,6 +858,14 @@ export default {
         this.mail_module_uuid = "";
       }
 
+      this.discoveredUserDomain = config.user_domain || "";
+      this.ldap_schema = config.ldap_schema || "";
+      this.discovered_rspamd_url = config.discovered_rspamd_url || "";
+
+      this.portal_enabled =
+        config.portal_enabled !== undefined
+          ? Boolean(config.portal_enabled)
+          : !config.configured || Boolean(config.portal_hostname);
       this.portal_hostname = config.portal_hostname || "";
       this.lets_encrypt = Boolean(config.lets_encrypt);
       this.http2https =
@@ -618,19 +879,36 @@ export default {
         config.milter_enabled !== undefined
           ? Boolean(config.milter_enabled)
           : true;
-      this.rspamd_url = config.rspamd_url || "http://127.0.0.1:11334";
+      this.rspamd_url =
+        config.rspamd_url ||
+        config.discovered_rspamd_url ||
+        "http://127.0.0.1:11334";
+      this.rspamd_user = config.rspamd_user || "";
       this.rspamdPasswordSet = Boolean(config.rspamd_password_set);
       this.rspamd_password = "";
       this.clear_rspamd_password = false;
+      this.rspamd_tls_verify =
+        config.rspamd_tls_verify !== undefined
+          ? Boolean(config.rspamd_tls_verify)
+          : false;
       this.digest_enabled = Boolean(config.digest_enabled);
       this.digest_time = config.digest_time || "07:30";
       this.timezone = config.timezone || "Europe/Berlin";
       this.admin_alert_email = config.admin_alert_email || "";
 
       this.loading.getConfiguration = false;
-      this.focusElement("portal_hostname");
+      if (this.portal_enabled) {
+        this.focusElement("portal_hostname");
+      }
     },
     async testRspamdConnection() {
+      this.error.rspamd_url = "";
+      if (this.rspamd_url && !/^https?:\/\/.+/i.test(this.rspamd_url)) {
+        this.error.rspamd_url = this.$t("settings.invalid_rspamd_url");
+        this.focusElement("rspamd_url");
+        return;
+      }
+
       this.loading.testRspamd = true;
       this.rspamdTestResult = null;
       const taskAction = "test-rspamd";
@@ -663,8 +941,13 @@ export default {
         this.createModuleTaskForApp(this.instanceName, {
           action: "test-rspamd",
           data: {
-            rspamd_url: this.rspamd_url || "http://127.0.0.1:11334",
+            rspamd_url:
+              this.rspamd_url ||
+              this.effectiveDiscoveredRspamdUrl ||
+              "http://127.0.0.1:11334",
+            rspamd_user: this.rspamd_user || "",
             rspamd_password: this.rspamd_password || "",
+            rspamd_tls_verify: Boolean(this.rspamd_tls_verify),
           },
           extra: {
             title: this.$t("action." + taskAction),
@@ -695,26 +978,28 @@ export default {
         }
       }
 
-      const fqdnRe =
-        /^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$/;
-      if (!this.portal_hostname) {
-        this.error.portal_hostname = this.$t("common.required");
-        if (isValidationOk) {
-          this.focusElement("portal_hostname");
-          isValidationOk = false;
-        }
-      } else if (!fqdnRe.test(this.portal_hostname)) {
-        this.error.portal_hostname = this.$t("settings.invalid_fqdn");
-        if (isValidationOk) {
-          this.focusElement("portal_hostname");
-          isValidationOk = false;
+      if (this.portal_enabled) {
+        const fqdnRe =
+          /^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$/;
+        if (!this.portal_hostname) {
+          this.error.portal_hostname = this.$t("common.required");
+          if (isValidationOk) {
+            this.focusElement("portal_hostname");
+            isValidationOk = false;
+          }
+        } else if (!fqdnRe.test(this.portal_hostname)) {
+          this.error.portal_hostname = this.$t("settings.invalid_fqdn");
+          if (isValidationOk) {
+            this.focusElement("portal_hostname");
+            isValidationOk = false;
+          }
         }
       }
 
-      if (!this.allowed_groups || !this.allowed_groups.length) {
-        this.error.allowed_groups = this.$t("settings.allowed_groups_required");
+      if (this.rspamd_url && !/^https?:\/\/.+/i.test(this.rspamd_url)) {
+        this.error.rspamd_url = this.$t("settings.invalid_rspamd_url");
         if (isValidationOk) {
-          this.focusElement("allowed_groups");
+          this.focusElement("rspamd_url");
           isValidationOk = false;
         }
       }
@@ -784,10 +1069,6 @@ export default {
       }
     },
     async configureModule() {
-      if (this.customGroupInput && this.customGroupInput.trim()) {
-        this.addCustomGroup();
-      }
-
       const isValidationOk = this.validateConfigureModule();
       if (!isValidationOk) {
         return;
@@ -817,19 +1098,27 @@ export default {
           action: "configure-module",
           data: {
             mail_module_uuid: this.mail_module_uuid,
-            portal_hostname: this.portal_hostname,
+            portal_enabled: Boolean(this.portal_enabled),
+            portal_hostname: this.portal_enabled ? this.portal_hostname : "",
             lets_encrypt: Boolean(this.lets_encrypt),
             http2https: Boolean(this.http2https),
-            allowed_groups: this.allowed_groups
-              .map((g) => g.trim())
-              .filter(Boolean),
-            portal_tracking_enabled: Boolean(this.portal_tracking_enabled),
+            allowed_groups: this.portal_enabled
+              ? this.allowed_groups.map((g) => g.trim()).filter(Boolean)
+              : [],
+            portal_tracking_enabled: Boolean(
+              this.portal_enabled && this.portal_tracking_enabled
+            ),
             milter_enabled: Boolean(this.milter_enabled),
-            rspamd_url: this.rspamd_url || "http://127.0.0.1:11334",
+            rspamd_url:
+              this.rspamd_url ||
+              this.effectiveDiscoveredRspamdUrl ||
+              "http://127.0.0.1:11334",
+            rspamd_user: this.rspamd_user || "",
             rspamd_password: this.clear_rspamd_password
               ? ""
               : this.rspamd_password || "",
             clear_rspamd_password: Boolean(this.clear_rspamd_password),
+            rspamd_tls_verify: Boolean(this.rspamd_tls_verify),
             digest_enabled: Boolean(this.digest_enabled),
             digest_time: this.digest_time || "07:30",
             timezone: this.timezone || "Europe/Berlin",
@@ -881,12 +1170,16 @@ export default {
   margin-bottom: $spacing-04;
 }
 
+.mg-bottom-xs {
+  margin-bottom: $spacing-02;
+}
+
 .mg-top-sm {
   margin-top: $spacing-04;
 }
 
 .maxwidth {
-  max-width: 42rem;
+  max-width: 44rem;
 }
 
 .section-heading {
@@ -896,15 +1189,28 @@ export default {
   border-bottom: 1px solid $ui-03;
 }
 
-.custom-group-row {
+.mail-discovery-row {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
   gap: $spacing-04;
 }
 
-.custom-group-input {
-  flex: 1 1 16rem;
+.mail-select-col {
+  flex: 1 1 22rem;
+}
+
+.domain-info-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02;
+}
+
+.rspamd-quick-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-02;
 }
 
 .digest-grid {
