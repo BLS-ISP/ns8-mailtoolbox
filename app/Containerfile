@@ -1,0 +1,34 @@
+FROM docker.io/library/python:3.12-slim
+
+LABEL org.opencontainers.image.title="NS8 Mail Toolbox App" \
+      org.opencontainers.image.description="FastAPI backend, Before-DKIM Milter, ManageSieve engine, and Secretariat Web Portal for NS8 Mail Toolbox" \
+      org.opencontainers.image.source="https://github.com/GeneraBlack/ns8-mailtoolbox" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/ \
+    DATA_DIR=/app/data \
+    CONFIG_DIR=/app/config
+
+WORKDIR /
+
+COPY app/backend/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm -f /tmp/requirements.txt && \
+    mkdir -p /app/backend /app/static /app/data /app/config
+
+COPY app/backend /app/backend
+
+# Copy prebuilt Vue secretariat portal (app/frontend/dist) to /app/static if present during build
+COPY app/Containerfile app/frontend/dis[t] /tmp/frontend-stage/
+RUN rm -f /tmp/frontend-stage/Containerfile && \
+    if [ -d /tmp/frontend-stage/dist ]; then cp -a /tmp/frontend-stage/dist/. /app/static/; \
+    else cp -a /tmp/frontend-stage/. /app/static/; fi && \
+    rm -rf /tmp/frontend-stage && \
+    find /app/backend -type f -exec sed -i 's/\r$//' {} +
+
+# 8080: FastAPI Portal & Internal NS8 API | 8090: Reserved for Phase 2 Signature Milter
+EXPOSE 8080 8090
+
+CMD ["uvicorn", "app.backend.main:app", "--host", "0.0.0.0", "--port", "8080"]
