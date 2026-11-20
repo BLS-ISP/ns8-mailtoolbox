@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "sync-connector-now output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/sync-connector-now",
+  "description": "Immediate sync result for an external POP3/IMAP mail connector",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "ok",
+    "fetched",
+    "error",
+    "alert_sent"
+  ],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "fetched": { "type": "integer" },
+    "error": { "type": "string" },
+    "alert_sent": { "type": "boolean" }
+  }
+}

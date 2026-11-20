@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "set-vacation input",
+  "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/set-vacation",
+  "description": "Configure or disable central sick-leave / vacation auto-reply and forwarding for a mailbox",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "user",
+    "enabled"
+  ],
+  "properties": {
+    "user": {
+      "type": "string",
+      "minLength": 1
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "start_date": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "maxLength": 0 },
+        { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+      ]
+    },
+    "end_date": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "maxLength": 0 },
+        { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+      ]
+    },
+    "subject": {
+      "type": "string"
+    },
+    "body": {
+      "type": "string"
+    },
+    "forward_enabled": {
+      "type": "boolean"
+    },
+    "forward_address": {
+      "type": "string"
+    },
+    "keep_copy": {
+      "type": "boolean"
+    },
+    "updated_by": {
+      "type": "string"
+    }
+  }
+}

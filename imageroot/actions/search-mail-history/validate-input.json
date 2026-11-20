@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "search-mail-history input",
+  "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/search-mail-history",
+  "description": "Search cached Rspamd mail tracking history",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "sender": {
+      "type": ["string", "null"]
+    },
+    "recipient": {
+      "type": ["string", "null"]
+    },
+    "subject": {
+      "type": ["string", "null"]
+    },
+    "action_filter": {
+      "type": ["string", "null"]
+    },
+    "date_from": {
+      "type": ["string", "null"]
+    },
+    "date_to": {
+      "type": ["string", "null"]
+    },
+    "limit": {
+      "type": ["integer", "null"]
+    }
+  }
+}

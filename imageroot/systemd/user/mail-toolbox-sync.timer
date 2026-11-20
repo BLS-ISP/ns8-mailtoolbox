@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic NS8 Mail Toolbox Mailbox Cache Sync (every 10 minutes)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+RandomizedDelaySec=30s
+Unit=mail-toolbox-sync.service
+
+[Install]
+WantedBy=timers.target

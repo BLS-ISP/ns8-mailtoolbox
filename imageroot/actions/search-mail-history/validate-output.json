@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "search-mail-history output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/search-mail-history",
+  "description": "Mail tracking search results normalized from Rspamd history and SQLite cache",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "rspamd_connected",
+    "rspamd_error",
+    "total",
+    "entries"
+  ],
+  "properties": {
+    "rspamd_connected": { "type": "boolean" },
+    "rspamd_error": { "type": "string" },
+    "total": { "type": "integer" },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string" },
+          "timestamp": { "type": "string" },
+          "sender": { "type": "string" },
+          "recipients": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "subject": { "type": "string" },
+          "status": { "type": "string" },
+          "rspamd_action": { "type": "string" },
+          "score": { "type": "number" },
+          "required_score": { "type": "number" },
+          "symbols": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "ip": { "type": "string" },
+          "message_id": { "type": "string" },
+          "size_bytes": { "type": "integer" }
+        }
+      }
+    }
+  }
+}

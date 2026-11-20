@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "list-audit-log output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/list-audit-log",
+  "description": "Audit log entries for delegated secretariat and Cockpit mailbox rule changes",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "entries"
+  ],
+  "properties": {
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "timestamp",
+          "actor",
+          "source",
+          "target_user",
+          "action",
+          "details"
+        ],
+        "properties": {
+          "id": { "type": "integer" },
+          "timestamp": { "type": "string" },
+          "actor": { "type": "string" },
+          "source": { "type": "string" },
+          "target_user": { "type": "string" },
+          "action": { "type": "string" },
+          "details": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "configure-module input",
+  "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/configure-module",
+  "description": "Configure coupled ns8-mail instance, Traefik portal hostname, authorized AD/LDAP groups, and Phase 2/3 Milter, Rspamd, Digest, Portal Tracking, and Connector alert settings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "mail_module_uuid",
+    "portal_hostname",
+    "lets_encrypt",
+    "http2https",
+    "allowed_groups"
+  ],
+  "properties": {
+    "mail_module_uuid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "UUID of the coupled ns8-mail module instance"
+    },
+    "portal_hostname": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$",
+      "description": "FQDN for the delegated Secretariat Web Portal behind Traefik"
+    },
+    "lets_encrypt": {
+      "type": "boolean",
+      "description": "Request a Let's Encrypt ACME certificate on Traefik"
+    },
+    "http2https": {
+      "type": "boolean",
+      "description": "Redirect HTTP requests to HTTPS on Traefik"
+    },
+    "allowed_groups": {
+      "type": "array",
+      "description": "LDAP/AD groups permitted to sign in to the Secretariat Web Portal",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "portal_tracking_enabled": {
+      "type": "boolean",
+      "description": "Allow authorized Secretariat Portal users read-only access to Mail-Tracking search"
+    },
+    "milter_enabled": {
+      "type": "boolean",
+      "description": "Enable Before-DKIM Postfix signature Milter listener on MILTER_TCP_PORT"
+    },
+    "rspamd_url": {
+      "type": "string",
+      "description": "Rspamd Controller HTTP base URL (default http://127.0.0.1:11334)"
+    },
+    "rspamd_password": {
+      "type": "string",
+      "description": "Rspamd Controller password (empty preserves existing saved password unless clear_rspamd_password is true)"
+    },
+    "clear_rspamd_password": {
+      "type": "boolean",
+      "description": "Explicitly clear the saved Rspamd Controller password"
+    },
+    "digest_enabled": {
+      "type": "boolean",
+      "description": "Enable daily Spam Quarantine Digest emails"
+    },
+    "digest_time": {
+      "type": "string",
+      "description": "Daily digest delivery time in HH:MM format (default 07:30)"
+    },
+    "timezone": {
+      "type": "string",
+      "description": "IANA timezone name for scheduled digest runs (default Europe/Berlin)"
+    },
+    "admin_alert_email": {
+      "type": "string",
+      "description": "Administrator email address notified on external POP3/IMAP connector failures"
+    }
+  }
+}

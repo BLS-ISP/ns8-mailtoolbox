@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "release-quarantine input",
+  "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/release-quarantine",
+  "description": "Release a quarantined Junk message to INBOX and optionally allowlist its sender",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "user"
+  ],
+  "properties": {
+    "user": {
+      "type": "string",
+      "minLength": 1
+    },
+    "uid": {
+      "type": ["string", "integer"]
+    },
+    "message_id": {
+      "type": ["string", "null"]
+    },
+    "allow_sender": {
+      "type": "boolean"
+    }
+  }
+}

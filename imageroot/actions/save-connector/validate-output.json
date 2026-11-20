@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "save-connector output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/save-connector",
+  "description": "Saved external POP3/IMAP mail connector",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "connector"
+  ],
+  "properties": {
+    "connector": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

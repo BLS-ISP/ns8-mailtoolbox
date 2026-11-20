@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "list-connectors output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/list-connectors",
+  "description": "External POP3/IMAP mail connectors and sync health status",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "connectors"
+  ],
+  "properties": {
+    "connectors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "name",
+          "target_user",
+          "target_email",
+          "protocol",
+          "host",
+          "port",
+          "use_ssl",
+          "remote_user",
+          "password_set",
+          "interval_minutes",
+          "leave_on_server",
+          "enabled"
+        ],
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" },
+          "target_user": { "type": "string" },
+          "target_email": { "type": "string" },
+          "protocol": { "type": "string" },
+          "host": { "type": "string" },
+          "port": { "type": "integer" },
+          "use_ssl": { "type": "boolean" },
+          "remote_user": { "type": "string" },
+          "password_set": { "type": "boolean" },
+          "interval_minutes": { "type": "integer" },
+          "leave_on_server": { "type": "boolean" },
+          "enabled": { "type": "boolean" },
+          "last_sync_at": { "type": ["string", "null"] },
+          "last_status": { "type": "string" },
+          "last_error": { "type": "string" },
+          "consecutive_failures": { "type": "integer" },
+          "messages_fetched_total": { "type": "integer" }
+        }
+      }
+    }
+  }
+}

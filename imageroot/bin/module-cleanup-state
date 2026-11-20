@@ -1,0 +1,9 @@
+#!/bin/bash
+
+#
+# Remove temporary SQLite online backup snapshot after Restic backup completes.
+#
+
+set -e
+
+rm -f data/toolbox-backup.sqlite

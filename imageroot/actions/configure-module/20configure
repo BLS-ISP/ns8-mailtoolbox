@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+
+"""Persist NS8 Mail Toolbox configuration, resolve WireGuard/localhost Milter bind IP, bind user domain, write toolbox_settings.json, configure Traefik route, and sync caches."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import agent
+import agent.tasks
+
+
+def _parse_bool(raw: Any, default: bool = False) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None or raw == "":
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _read_existing_settings(settings_path: Path) -> dict[str, Any]:
+    if not settings_path.is_file():
+        return {}
+    try:
+        parsed = json.loads(settings_path.read_text(encoding="utf-8"))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _atomic_write_json(dest: Path, payload: dict[str, Any], mode: int = 0o600) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dest.parent / f".{dest.name}.tmp.{os.getpid()}"
+    content = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(str(tmp_path), mode)
+        os.replace(str(tmp_path), str(dest))
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _resolve_milter_bind_host(rdb: Any, node_id: int, imap_provider: dict[str, Any]) -> str:
+    try:
+        mail_node_id = int(imap_provider.get("node", node_id) or node_id)
+    except (TypeError, ValueError):
+        mail_node_id = node_id
+
+    if node_id == mail_node_id:
+        return "127.0.0.1"
+
+    try:
+        raw_vpn = rdb.hget(f"node/{node_id}/vpn", "ip_address")
+        if isinstance(raw_vpn, bytes):
+            vpn_ip = raw_vpn.decode("utf-8", errors="replace").strip()
+        else:
+            vpn_ip = str(raw_vpn or "").strip()
+        if vpn_ip and vpn_ip != "0.0.0.0":
+            return vpn_ip
+    except Exception as exc:
+        print(f"Warning: Could not resolve WireGuard VPN IP for node {node_id}: {exc}", file=sys.stderr)
+
+    return "127.0.0.1"
+
+
+def main() -> int:
+    data = json.load(sys.stdin)
+
+    state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
+    config_dir = state_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = config_dir / "toolbox_settings.json"
+    existing_settings = _read_existing_settings(settings_path)
+
+    mail_module_uuid = str(data["mail_module_uuid"]).strip()
+    portal_hostname = str(data["portal_hostname"]).strip().lower()
+    lets_encrypt = bool(data.get("lets_encrypt", False))
+    http2https = bool(data.get("http2https", True))
+    raw_groups = data.get("allowed_groups", []) or []
+    allowed_groups = [
+        str(group).strip()
+        for group in raw_groups
+        if isinstance(group, str) and str(group).strip()
+    ]
+
+    # Phase 2 & 3 settings (100% backward-compatible defaults + password preservation)
+    if "portal_tracking_enabled" in data:
+        portal_tracking_enabled = bool(data["portal_tracking_enabled"])
+    else:
+        portal_tracking_enabled = _parse_bool(
+            existing_settings.get(
+                "portal_tracking_enabled", os.environ.get("PORTAL_TRACKING_ENABLED")
+            ),
+            default=False,
+        )
+
+    if "milter_enabled" in data:
+        milter_enabled = bool(data["milter_enabled"])
+    else:
+        milter_enabled = _parse_bool(
+            existing_settings.get("milter_enabled", os.environ.get("MILTER_ENABLED")),
+            default=True,
+        )
+
+    if "rspamd_url" in data:
+        rspamd_url = str(data.get("rspamd_url") or "").strip() or "http://127.0.0.1:11334"
+    else:
+        rspamd_url = (
+            str(existing_settings.get("rspamd_url") or os.environ.get("RSPAMD_URL") or "").strip()
+            or "http://127.0.0.1:11334"
+        )
+
+    clear_rspamd_password = bool(data.get("clear_rspamd_password", False))
+    incoming_rspamd_password = str(data.get("rspamd_password") or "")
+    if clear_rspamd_password:
+        rspamd_password = ""
+    elif incoming_rspamd_password != "":
+        rspamd_password = incoming_rspamd_password
+    else:
+        rspamd_password = str(existing_settings.get("rspamd_password") or "")
+
+    if "digest_enabled" in data:
+        digest_enabled = bool(data["digest_enabled"])
+    else:
+        digest_enabled = _parse_bool(
+            existing_settings.get("digest_enabled", os.environ.get("DIGEST_ENABLED")),
+            default=False,
+        )
+
+    if "digest_time" in data:
+        digest_time = str(data.get("digest_time") or "").strip() or "07:30"
+    else:
+        digest_time = (
+            str(existing_settings.get("digest_time") or os.environ.get("DIGEST_TIME") or "").strip()
+            or "07:30"
+        )
+
+    if "timezone" in data:
+        timezone_name = str(data.get("timezone") or "").strip() or "Europe/Berlin"
+    else:
+        timezone_name = (
+            str(existing_settings.get("timezone") or os.environ.get("TIMEZONE") or "").strip()
+            or "Europe/Berlin"
+        )
+
+    if "admin_alert_email" in data:
+        admin_alert_email = str(data.get("admin_alert_email") or "").strip()
+    else:
+        admin_alert_email = str(
+            existing_settings.get("admin_alert_email", os.environ.get("ADMIN_ALERT_EMAIL", ""))
+        ).strip()
+
+    rdb = agent.redis_connect(use_replica=True)
+    imap_providers = agent.list_service_providers(
+        rdb, "imap", "tcp", {"module_uuid": mail_module_uuid}
+    )
+    agent.assert_exp(
+        len(imap_providers) > 0,
+        f"Could not find imap TCP service provider for mail_module_uuid={mail_module_uuid}",
+    )
+    imap_provider = imap_providers[0]
+    mail_module_id = str(imap_provider["module_id"]).strip()
+    user_domain = str(imap_provider["user_domain"]).strip()
+    agent.assert_exp(bool(mail_module_id), "Resolved mail_module_id is empty")
+    agent.assert_exp(bool(user_domain), "Resolved user_domain is empty")
+
+    try:
+        current_node_id = int(os.environ.get("NODE_ID", "1") or 1)
+    except ValueError:
+        current_node_id = 1
+    milter_bind_host = _resolve_milter_bind_host(rdb, current_node_id, imap_provider)
+
+    # Bind local node ldapproxy to the coupled mail server's user domain
+    agent.bind_user_domains([user_domain])
+
+    allowed_groups_csv = ",".join(allowed_groups)
+    agent.set_env("MAIL_MODULE_UUID", mail_module_uuid)
+    agent.set_env("MAIL_MODULE_ID", mail_module_id)
+    agent.set_env("USER_DOMAIN", user_domain)
+    agent.set_env("PORTAL_HOSTNAME", portal_hostname)
+    agent.set_env("LETS_ENCRYPT", "True" if lets_encrypt else "False")
+    agent.set_env("HTTP2HTTPS", "True" if http2https else "False")
+    agent.set_env("ALLOWED_GROUPS", allowed_groups_csv)
+    agent.set_env("PORTAL_TRACKING_ENABLED", "True" if portal_tracking_enabled else "False")
+    agent.set_env("MILTER_BIND_HOST", milter_bind_host)
+    agent.set_env("MILTER_ENABLED", "1" if milter_enabled else "0")
+    agent.set_env("RSPAMD_URL", rspamd_url)
+    agent.set_env("DIGEST_ENABLED", "True" if digest_enabled else "False")
+    agent.set_env("DIGEST_TIME", digest_time)
+    agent.set_env("TIMEZONE", timezone_name)
+    agent.set_env("ADMIN_ALERT_EMAIL", admin_alert_email)
+
+    # Flush ~/.config/state/environment BEFORE configuring routes / starting services (NS8 Rule 2)
+    agent.dump_env()
+
+    # Persist ./config/toolbox_settings.json atomically (0600)
+    settings_payload = {
+        "portal_tracking_enabled": portal_tracking_enabled,
+        "milter_enabled": milter_enabled,
+        "rspamd_url": rspamd_url,
+        "rspamd_password": rspamd_password,
+        "digest_enabled": digest_enabled,
+        "digest_time": digest_time,
+        "timezone": timezone_name,
+        "admin_alert_email": admin_alert_email,
+    }
+    _atomic_write_json(settings_path, settings_payload, 0o600)
+
+    web_tcp_port = os.environ["WEB_TCP_PORT"]
+    traefik_id = agent.resolve_agent_id("traefik@node")
+    agent.assert_exp(traefik_id is not None, "Could not resolve traefik@node agent ID")
+
+    route_res = agent.tasks.run(
+        agent_id=traefik_id,
+        action="set-route",
+        data={
+            "instance": os.environ["MODULE_ID"],
+            "url": f"http://127.0.0.1:{web_tcp_port}",
+            "host": portal_hostname,
+            "lets_encrypt": lets_encrypt,
+            "http2https": http2https,
+        },
+    )
+    agent.assert_exp(route_res.get("exit_code") == 0, "Failed to configure Traefik HTTP route")
+
+    child_env = os.environ.copy()
+    child_env.update(
+        {
+            "MAIL_MODULE_UUID": mail_module_uuid,
+            "MAIL_MODULE_ID": mail_module_id,
+            "USER_DOMAIN": user_domain,
+            "PORTAL_HOSTNAME": portal_hostname,
+            "ALLOWED_GROUPS": allowed_groups_csv,
+            "PORTAL_TRACKING_ENABLED": "True" if portal_tracking_enabled else "False",
+            "MILTER_BIND_HOST": milter_bind_host,
+            "MILTER_ENABLED": "1" if milter_enabled else "0",
+            "RSPAMD_URL": rspamd_url,
+            "DIGEST_ENABLED": "True" if digest_enabled else "False",
+            "DIGEST_TIME": digest_time,
+            "TIMEZONE": timezone_name,
+            "ADMIN_ALERT_EMAIL": admin_alert_email,
+        }
+    )
+    subprocess.run(["discover-services"], env=child_env, check=True)
+    subprocess.run(["sync-mailboxes-cache"], env=child_env, check=False)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

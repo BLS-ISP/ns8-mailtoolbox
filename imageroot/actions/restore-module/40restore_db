@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+
+"""Restore consistent SQLite database from `toolbox-backup.sqlite` snapshot if present."""
+
+from __future__ import annotations
+
+import os
+import secrets
+import shutil
+import sqlite3
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
+    data_dir = state_dir / "data"
+    config_dir = state_dir / "config"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(str(data_dir), 0o700)
+    os.chmod(str(config_dir), 0o700)
+
+    token_path = config_dir / "internal.token"
+    if not token_path.is_file() or not token_path.read_text(encoding="utf-8").strip():
+        fd = os.open(str(token_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(secrets.token_hex(32) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    os.chmod(str(token_path), 0o600)
+
+    for env_name in ("discovery_mail.env", "discovery_ldap.env"):
+        for base in (state_dir, config_dir):
+            target = base / env_name
+            if not target.exists():
+                target.write_text("", encoding="utf-8")
+                os.chmod(str(target), 0o600)
+
+    backup_db = data_dir / "toolbox-backup.sqlite"
+    live_db = data_dir / "toolbox.sqlite"
+
+    if backup_db.is_file():
+        # Remove stale WAL/SHM journals before restoring the consistent online snapshot
+        for suffix in ("-wal", "-shm"):
+            wal_file = Path(str(live_db) + suffix)
+            wal_file.unlink(missing_ok=True)
+
+        try:
+            src = sqlite3.connect(str(backup_db))
+            dst = sqlite3.connect(str(live_db))
+            with dst:
+                src.backup(dst)
+            dst.close()
+            src.close()
+        except Exception:
+            shutil.copy2(str(backup_db), str(live_db))
+
+        backup_db.unlink(missing_ok=True)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

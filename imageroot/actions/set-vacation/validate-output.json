@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "set-vacation output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/set-vacation",
+  "description": "Updated mailbox vacation and SOGo coexistence status",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "user",
+    "vacation"
+  ],
+  "properties": {
+    "user": {
+      "type": "string"
+    },
+    "display_name": {
+      "type": "string"
+    },
+    "mail": {
+      "type": "string"
+    },
+    "aliases": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "sogo_status": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "vacation": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

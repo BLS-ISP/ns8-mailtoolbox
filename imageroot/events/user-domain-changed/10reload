@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+
+"""Handle NS8 `user-domain-changed` events (LDAP/AD proxy or user/group updates)."""
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def read_bytes_safe(path: Path) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return b""
+
+
+def main() -> None:
+    try:
+        _ = sys.stdin.read()
+    except Exception:
+        pass
+
+    user_domain = os.environ.get("USER_DOMAIN", "").strip()
+    if not user_domain:
+        return
+
+    state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
+    ldap_env_path = state_dir / "discovery_ldap.env"
+    before = read_bytes_safe(ldap_env_path)
+
+    subprocess.run(["discover-services"], check=False)
+    subprocess.run(["sync-mailboxes-cache"], check=False)
+
+    after = read_bytes_safe(ldap_env_path)
+    if after and after != before:
+        subprocess.run(
+            ["systemctl", "--user", "try-restart", "mail-toolbox.service"],
+            check=False,
+        )
+
+
+if __name__ == "__main__":
+    main()

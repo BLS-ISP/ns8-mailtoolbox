@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+
+"""Discover coupled ns8-mail TCP endpoints, LDAP proxy settings, and Dovecot master credentials."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+import agent
+import agent.tasks
+from agent.ldapproxy import Ldapproxy
+
+
+def _load_env_fallback(state_dir: Path) -> dict[str, str]:
+    """Read key=value pairs from state/environment if not already populated in os.environ."""
+    merged: dict[str, str] = {}
+    env_file = state_dir / "environment"
+    if env_file.is_file():
+        if hasattr(agent, "read_envfile"):
+            try:
+                merged.update(agent.read_envfile(str(env_file)))
+            except Exception:
+                pass
+        if not merged:
+            for raw_line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                merged[key.strip()] = val.strip().strip("\"'")
+    merged.update(os.environ)
+    return merged
+
+
+def _sanitize_env_val(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).replace("\r", "").replace("\n", "").strip()
+
+
+def _atomic_write_text(dest: Path, content: str, mode: int = 0o600) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dest.parent / f".{dest.name}.tmp.{os.getpid()}"
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(str(tmp_path), mode)
+        os.replace(str(tmp_path), str(dest))
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _parse_task_output(result: dict[str, Any]) -> dict[str, Any]:
+    output = result.get("output")
+    if isinstance(output, dict):
+        return output
+    if isinstance(output, str):
+        text = output.strip()
+        if text:
+            return json.loads(text)
+    return {}
+
+
+def main() -> int:
+    state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
+    config_dir = state_dir / "config"
+    data_dir = state_dir / "data"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Ensure env files always exist for systemd/Podman --env-file even before configure-module
+    for fname in ("discovery_mail.env", "discovery_ldap.env"):
+        for base in (state_dir, config_dir):
+            fpath = base / fname
+            if not fpath.exists():
+                _atomic_write_text(fpath, "", 0o600)
+
+    env = _load_env_fallback(state_dir)
+    mail_module_uuid = env.get("MAIL_MODULE_UUID", "").strip()
+    mail_module_id = env.get("MAIL_MODULE_ID", "").strip()
+    user_domain = env.get("USER_DOMAIN", "").strip()
+
+    if not mail_module_uuid and not user_domain:
+        return 0
+
+    rdb = agent.redis_connect(use_replica=True)
+
+    # 1. Discover ns8-mail endpoints (IMAP, Submission, ManageSieve)
+    if mail_module_uuid:
+        imap_providers = agent.list_service_providers(
+            rdb, "imap", "tcp", {"module_uuid": mail_module_uuid}
+        )
+        sub_providers = agent.list_service_providers(
+            rdb, "submission", "tcp", {"module_uuid": mail_module_uuid}
+        )
+        sieve_providers = agent.list_service_providers(
+            rdb, "sieve", "tcp", {"module_uuid": mail_module_uuid}
+        )
+
+        if imap_providers:
+            imap_info = imap_providers[0]
+            mail_host = (
+                imap_info.get("host")
+                or imap_info.get("ip")
+                or imap_info.get("address")
+                or "127.0.0.1"
+            )
+            mail_imap_port = imap_info.get("port", 143)
+            mail_module_id = imap_info.get("module_id") or mail_module_id
+            if not user_domain:
+                user_domain = str(imap_info.get("user_domain", "")).strip()
+        else:
+            print(
+                f"Warning: No imap TCP provider found in Redis for MAIL_MODULE_UUID={mail_module_uuid}",
+                file=sys.stderr,
+            )
+            mail_host = ""
+            mail_imap_port = 143
+
+        mail_submission_port = (
+            sub_providers[0].get("port", 587) if sub_providers else 587
+        )
+        mail_sieve_port = (
+            sieve_providers[0].get("port", 4190) if sieve_providers else 4190
+        )
+
+        if mail_host:
+            mail_env_lines = [
+                f"MAIL_HOST={_sanitize_env_val(mail_host)}",
+                f"MAIL_IMAP_PORT={_sanitize_env_val(mail_imap_port)}",
+                f"MAIL_SIEVE_PORT={_sanitize_env_val(mail_sieve_port)}",
+                f"MAIL_SUBMISSION_PORT={_sanitize_env_val(mail_submission_port)}",
+                f"MAIL_MODULE_ID={_sanitize_env_val(mail_module_id)}",
+            ]
+            mail_env_text = "\n".join(mail_env_lines) + "\n"
+            _atomic_write_text(state_dir / "discovery_mail.env", mail_env_text, 0o600)
+            _atomic_write_text(config_dir / "discovery_mail.env", mail_env_text, 0o600)
+
+    # 2. Discover local node LDAP proxy configuration for USER_DOMAIN
+    if user_domain:
+        try:
+            domain_info = Ldapproxy().get_domain(user_domain)
+        except Exception as exc:
+            print(
+                f"Warning: Ldapproxy().get_domain({user_domain!r}) failed: {exc}",
+                file=sys.stderr,
+            )
+            domain_info = None
+
+        if domain_info:
+            ldap_env_lines = [
+                f"LDAP_HOST={_sanitize_env_val(domain_info.get('host', '127.0.0.1'))}",
+                f"LDAP_PORT={_sanitize_env_val(domain_info.get('port', 389))}",
+                f"LDAP_BASE={_sanitize_env_val(domain_info.get('base_dn', ''))}",
+                f"LDAP_USER={_sanitize_env_val(domain_info.get('bind_dn', ''))}",
+                f"LDAP_PASS={_sanitize_env_val(domain_info.get('bind_password', ''))}",
+                f"LDAP_SCHEMA={_sanitize_env_val(domain_info.get('schema', 'rfc2307'))}",
+                f"LDAP_DOMAIN={_sanitize_env_val(user_domain)}",
+            ]
+            ldap_env_text = "\n".join(ldap_env_lines) + "\n"
+            _atomic_write_text(state_dir / "discovery_ldap.env", ldap_env_text, 0o600)
+            _atomic_write_text(config_dir / "discovery_ldap.env", ldap_env_text, 0o600)
+
+    # 3. Fetch Dovecot Master-User (`vmail`) credentials from module/{mail_id} when leader is reachable
+    if mail_module_id:
+        try:
+            creds_res = agent.tasks.run(
+                agent_id=f"module/{mail_module_id}",
+                action="reveal-master-credentials",
+            )
+            if creds_res.get("exit_code") == 0:
+                creds_data = _parse_task_output(creds_res)
+                raw_combined = creds_data.get("credentials", "")
+                if isinstance(raw_combined, str) and ":" in raw_combined:
+                    creds_line = raw_combined.strip()
+                else:
+                    master_user = _sanitize_env_val(
+                        creds_data.get("user")
+                        or creds_data.get("username")
+                        or "vmail"
+                    )
+                    master_pass = _sanitize_env_val(
+                        creds_data.get("password")
+                        or creds_data.get("pass")
+                        or creds_data.get("master_password")
+                        or ""
+                    )
+                    creds_line = f"{master_user}:{master_pass}" if master_pass else ""
+
+                if creds_line and ":" in creds_line:
+                    _atomic_write_text(
+                        config_dir / "master.creds", creds_line + "\n", 0o600
+                    )
+            else:
+                print(
+                    f"Warning: reveal-master-credentials on module/{mail_module_id} exited with {creds_res.get('exit_code')}",
+                    file=sys.stderr,
+                )
+        except Exception as exc:
+            print(
+                f"Warning: Could not reach cluster leader for reveal-master-credentials: {exc}",
+                file=sys.stderr,
+            )
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

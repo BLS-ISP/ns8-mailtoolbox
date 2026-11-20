@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "delete-allowlist output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/delete-allowlist",
+  "description": "Deleted allowlist entry confirmation",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "deleted"
+  ],
+  "properties": {
+    "deleted": { "type": "boolean" }
+  }
+}

@@ -1,0 +1,149 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "get-configuration output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/get-configuration",
+  "description": "Current NS8 Mail Toolbox configuration, coupled mail servers, LDAP/AD groups, and Phase 2/3 Milter, Rspamd, Digest, Portal Tracking, and Connector settings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "configured",
+    "mail_module_uuid",
+    "mail_module_id",
+    "user_domain",
+    "portal_hostname",
+    "lets_encrypt",
+    "http2https",
+    "allowed_groups",
+    "portal_tracking_enabled",
+    "web_tcp_port",
+    "milter_tcp_port",
+    "available_mail_servers",
+    "available_groups",
+    "milter_enabled",
+    "milter_postfix_snippet",
+    "milter_postfix_reset_snippet",
+    "rspamd_url",
+    "rspamd_password_set",
+    "digest_enabled",
+    "digest_time",
+    "timezone",
+    "admin_alert_email"
+  ],
+  "properties": {
+    "configured": {
+      "type": "boolean"
+    },
+    "mail_module_uuid": {
+      "type": "string"
+    },
+    "mail_module_id": {
+      "type": "string"
+    },
+    "user_domain": {
+      "type": "string"
+    },
+    "portal_hostname": {
+      "type": "string"
+    },
+    "lets_encrypt": {
+      "type": "boolean"
+    },
+    "http2https": {
+      "type": "boolean"
+    },
+    "allowed_groups": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "portal_tracking_enabled": {
+      "type": "boolean"
+    },
+    "web_tcp_port": {
+      "type": "integer"
+    },
+    "milter_tcp_port": {
+      "type": "integer"
+    },
+    "available_mail_servers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "module_id",
+          "module_uuid",
+          "mail_hostname",
+          "user_domain",
+          "node_id",
+          "same_node"
+        ],
+        "properties": {
+          "module_id": {
+            "type": "string"
+          },
+          "module_uuid": {
+            "type": "string"
+          },
+          "mail_hostname": {
+            "type": "string"
+          },
+          "user_domain": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "integer"
+          },
+          "same_node": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "available_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "group",
+          "description"
+        ],
+        "properties": {
+          "group": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "milter_enabled": {
+      "type": "boolean"
+    },
+    "milter_postfix_snippet": {
+      "type": "string"
+    },
+    "milter_postfix_reset_snippet": {
+      "type": "string"
+    },
+    "rspamd_url": {
+      "type": "string"
+    },
+    "rspamd_password_set": {
+      "type": "boolean"
+    },
+    "digest_enabled": {
+      "type": "boolean"
+    },
+    "digest_time": {
+      "type": "string"
+    },
+    "timezone": {
+      "type": "string"
+    },
+    "admin_alert_email": {
+      "type": "string"
+    }
+  }
+}

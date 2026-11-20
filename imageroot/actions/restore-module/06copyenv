@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+
+"""Restore portable environment variables while preserving newly allocated node/port identities."""
+
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import sys
+
+import agent
+
+PORTABLE_ENV_KEYS = (
+    "MAIL_MODULE_UUID",
+    "MAIL_MODULE_ID",
+    "USER_DOMAIN",
+    "PORTAL_HOSTNAME",
+    "LETS_ENCRYPT",
+    "HTTP2HTTPS",
+    "ALLOWED_GROUPS",
+    "PORTAL_TRACKING_ENABLED",
+    "APP_SECRET_KEY",
+    "MILTER_ENABLED",
+    "RSPAMD_URL",
+    "DIGEST_ENABLED",
+    "DIGEST_TIME",
+    "TIMEZONE",
+    "ADMIN_ALERT_EMAIL",
+)
+
+
+def main() -> int:
+    request = json.load(sys.stdin)
+    original_env = request.get("environment", {}) or {}
+
+    # Ensure WEB_TCP_PORT and MILTER_TCP_PORT reflect the newly allocated TCP_PORTS on this node
+    tcp_ports_raw = os.environ.get("TCP_PORTS", "").strip()
+    allocated = [p.strip() for p in tcp_ports_raw.split(",") if p.strip()]
+    if len(allocated) >= 2:
+        web_tcp_port, milter_tcp_port = allocated[0], allocated[1]
+    elif len(allocated) == 1:
+        web_tcp_port = allocated[0]
+        milter_tcp_port = str(int(allocated[0]) + 1)
+    elif os.environ.get("WEB_TCP_PORT", "").strip():
+        web_tcp_port = os.environ["WEB_TCP_PORT"].strip()
+        milter_tcp_port = os.environ.get("MILTER_TCP_PORT", str(int(web_tcp_port) + 1)).strip()
+    elif os.environ.get("TCP_PORT", "").strip():
+        web_tcp_port = os.environ["TCP_PORT"].strip()
+        milter_tcp_port = str(int(web_tcp_port) + 1)
+    else:
+        raise RuntimeError("Missing TCP_PORTS allocation during restore-module")
+
+    for key in PORTABLE_ENV_KEYS:
+        if key in original_env and original_env[key] is not None:
+            agent.set_env(key, str(original_env[key]))
+
+    if not original_env.get("APP_SECRET_KEY") and not os.environ.get("APP_SECRET_KEY"):
+        agent.set_env("APP_SECRET_KEY", secrets.token_hex(32))
+
+    agent.set_env("WEB_TCP_PORT", str(web_tcp_port))
+    agent.set_env("MILTER_TCP_PORT", str(milter_tcp_port))
+    agent.set_env("MILTER_BIND_HOST", "127.0.0.1")
+    if not os.environ.get("MAIL_TOOLBOX_APP_IMAGE", "").strip():
+        restored_image = str(original_env.get("MAIL_TOOLBOX_APP_IMAGE", "")).strip()
+        agent.set_env(
+            "MAIL_TOOLBOX_APP_IMAGE",
+            restored_image or "ghcr.io/generablack/mail-toolbox-app:latest",
+        )
+
+    # Flush ~/.config/state/environment immediately (NS8 Rule 2)
+    agent.dump_env()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

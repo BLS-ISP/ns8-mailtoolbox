@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "list-quarantine output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/list-quarantine",
+  "description": "Quarantined Junk messages, scheduled digest status, and per-user sender allowlist",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "items",
+    "digest_status",
+    "allowlist"
+  ],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string" },
+          "user": { "type": "string" },
+          "recipient": { "type": "string" },
+          "sender": { "type": "string" },
+          "subject": { "type": "string" },
+          "received_at": { "type": "string" },
+          "spam_score": { "type": ["number", "null"] },
+          "uid": { "type": "string" },
+          "message_id": { "type": "string" }
+        }
+      }
+    },
+    "digest_status": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "enabled",
+        "digest_time",
+        "timezone",
+        "last_run_at",
+        "last_digests_sent"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "digest_time": { "type": "string" },
+        "timezone": { "type": "string" },
+        "last_run_at": { "type": "string" },
+        "last_digests_sent": { "type": "integer" }
+      }
+    },
+    "allowlist": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "integer" },
+          "user": { "type": "string" },
+          "sender_email": { "type": "string" },
+          "created_at": { "type": "string" }
+        }
+      }
+    }
+  }
+}

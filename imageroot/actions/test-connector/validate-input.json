@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "test-connector input",
+  "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/test-connector",
+  "description": "Test authentication and connectivity to an external POP3/IMAP server",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "protocol",
+    "host",
+    "port",
+    "remote_user"
+  ],
+  "properties": {
+    "id": {
+      "type": ["integer", "null"]
+    },
+    "protocol": {
+      "type": "string",
+      "enum": ["imaps", "imap", "pop3s", "pop3"]
+    },
+    "host": {
+      "type": "string",
+      "minLength": 1
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "use_ssl": {
+      "type": "boolean"
+    },
+    "remote_user": {
+      "type": "string",
+      "minLength": 1
+    },
+    "remote_password": {
+      "type": ["string", "null"]
+    }
+  }
+}

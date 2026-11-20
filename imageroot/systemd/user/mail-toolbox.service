@@ -1,0 +1,48 @@
+[Unit]
+Description=Rootless NS8 Mail Toolbox Application Container
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=PODMAN_SYSTEMD_UNIT=%n
+EnvironmentFile=%E/state/environment
+EnvironmentFile=-%E/state/discovery_mail.env
+EnvironmentFile=-%E/state/discovery_ldap.env
+WorkingDirectory=%E/state
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=70
+ExecStartPre=/bin/mkdir --parents %E/state/data %E/state/config
+ExecStartPre=/usr/bin/touch %E/state/discovery_mail.env %E/state/discovery_ldap.env
+ExecStartPre=/bin/rm -f %t/mail-toolbox.pid %t/mail-toolbox.cid
+ExecStartPre=/usr/local/bin/runagent discover-services
+ExecStart=/usr/bin/podman run \
+    --conmon-pidfile %t/mail-toolbox.pid \
+    --cidfile %t/mail-toolbox.cid \
+    --cgroups=no-conmon \
+    --replace \
+    -d \
+    --name mail-toolbox-app \
+    --pull=missing \
+    --restart=on-failure \
+    --network=slirp4netns:allow_host_loopback=true \
+    --add-host=accountprovider:10.0.2.2 \
+    --add-host=host.containers.internal:10.0.2.2 \
+    -e CONTAINER_HOST_GATEWAY=10.0.2.2 \
+    -p 127.0.0.1:${WEB_TCP_PORT}:8080 \
+    -p ${MILTER_BIND_HOST}:${MILTER_TCP_PORT}:8090 \
+    --env-file=environment \
+    --env-file=discovery_mail.env \
+    --env-file=discovery_ldap.env \
+    -v ./data:/app/data:Z \
+    -v ./config:/app/config:Z \
+    ${MAIL_TOOLBOX_APP_IMAGE}
+ExecStartPost=/usr/bin/bash -c 'for i in $(seq 1 30); do python3 -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen(\"http://127.0.0.1:${WEB_TCP_PORT}/api/health\", timeout=2).status == 200 else 1)" >/dev/null 2>&1 && exit 0; sleep 1; done; echo "Timed out waiting for http://127.0.0.1:${WEB_TCP_PORT}/api/health" >&2; exit 1'
+ExecStop=/usr/bin/podman stop --ignore --cidfile %t/mail-toolbox.cid -t 10
+ExecStopPost=/usr/bin/podman rm --ignore -f --cidfile %t/mail-toolbox.cid
+PIDFile=%t/mail-toolbox.pid
+Type=forking
+
+[Install]
+WantedBy=default.target

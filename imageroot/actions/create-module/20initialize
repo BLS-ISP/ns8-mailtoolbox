@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+
+"""Initialize NS8 Mail Toolbox state directories, TCP port mappings, and cryptographic secrets."""
+
+from __future__ import annotations
+
+import os
+import secrets
+import sys
+from pathlib import Path
+
+import agent
+
+
+def _write_secret_file(path: Path, value: str, mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(value + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(str(path), mode)
+
+
+def main() -> int:
+    state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
+    data_dir = state_dir / "data"
+    config_dir = state_dir / "config"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(str(data_dir), 0o700)
+    os.chmod(str(config_dir), 0o700)
+
+    # Parse TCP_PORTS (org.nethserver.tcp-ports-demand=2 allocates "p1,p2")
+    tcp_ports_raw = os.environ.get("TCP_PORTS", "").strip()
+    allocated = [p.strip() for p in tcp_ports_raw.split(",") if p.strip()]
+    if len(allocated) >= 2:
+        web_tcp_port, milter_tcp_port = allocated[0], allocated[1]
+    elif len(allocated) == 1:
+        web_tcp_port = allocated[0]
+        milter_tcp_port = str(int(allocated[0]) + 1)
+    elif os.environ.get("TCP_PORT", "").strip():
+        web_tcp_port = os.environ["TCP_PORT"].strip()
+        milter_tcp_port = str(int(web_tcp_port) + 1)
+    else:
+        raise RuntimeError("Neither TCP_PORTS nor TCP_PORT is set in module environment")
+
+    app_secret_key = os.environ.get("APP_SECRET_KEY", "").strip() or secrets.token_hex(32)
+
+    token_path = config_dir / "internal.token"
+    if not token_path.is_file() or not token_path.read_text(encoding="utf-8").strip():
+        _write_secret_file(token_path, secrets.token_hex(32), 0o600)
+    else:
+        os.chmod(str(token_path), 0o600)
+
+    # Pre-create empty discovery env files so systemd/podman --env-file never fails before configure
+    for env_name in ("discovery_mail.env", "discovery_ldap.env"):
+        for base in (state_dir, config_dir):
+            target = base / env_name
+            if not target.exists():
+                _write_secret_file(target, "", 0o600)
+
+    agent.set_env("WEB_TCP_PORT", str(web_tcp_port))
+    agent.set_env("MILTER_TCP_PORT", str(milter_tcp_port))
+    agent.set_env("MILTER_BIND_HOST", "127.0.0.1")
+    agent.set_env("APP_SECRET_KEY", app_secret_key)
+    if not os.environ.get("MAIL_TOOLBOX_APP_IMAGE", "").strip():
+        agent.set_env("MAIL_TOOLBOX_APP_IMAGE", "ghcr.io/generablack/mail-toolbox-app:latest")
+
+    # Flush ~/.config/state/environment immediately (NS8 Rule 2)
+    agent.dump_env()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

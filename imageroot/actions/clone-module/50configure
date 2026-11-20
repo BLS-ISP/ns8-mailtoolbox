@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+
+"""Configure cloned/moved NS8 Mail Toolbox instance on destination node, resolve WireGuard/localhost Milter bind IP, and reconcile Sieve rules."""
+
+from __future__ import annotations
+
+import os
+import secrets
+import shutil
+import sqlite3
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+import agent
+import agent.tasks
+
+
+def _parse_bool(raw: str | None, default: bool = False) -> bool:
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _resolve_milter_bind_host(rdb: Any, node_id: int, imap_provider: dict[str, Any]) -> str:
+    try:
+        mail_node_id = int(imap_provider.get("node", node_id) or node_id)
+    except (TypeError, ValueError):
+        mail_node_id = node_id
+
+    if node_id == mail_node_id:
+        return "127.0.0.1"
+
+    try:
+        raw_vpn = rdb.hget(f"node/{node_id}/vpn", "ip_address")
+        vpn_ip = (
+            raw_vpn.decode("utf-8", errors="replace").strip()
+            if isinstance(raw_vpn, bytes)
+            else str(raw_vpn or "").strip()
+        )
+        if vpn_ip and vpn_ip != "0.0.0.0":
+            return vpn_ip
+    except Exception as exc:
+        print(f"Warning: Could not resolve WireGuard VPN IP for node {node_id}: {exc}", file=sys.stderr)
+
+    return "127.0.0.1"
+
+
+def main() -> int:
+    # Consume optional clone input payload from stdin
+    try:
+        _ = sys.stdin.read()
+    except Exception:
+        pass
+
+    state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
+    data_dir = state_dir / "data"
+    config_dir = state_dir / "config"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(str(data_dir), 0o700)
+    os.chmod(str(config_dir), 0o700)
+
+    # Update WEB_TCP_PORT and MILTER_TCP_PORT to match destination node TCP_PORTS allocation
+    tcp_ports_raw = os.environ.get("TCP_PORTS", "").strip()
+    allocated = [p.strip() for p in tcp_ports_raw.split(",") if p.strip()]
+    if len(allocated) >= 2:
+        web_tcp_port, milter_tcp_port = allocated[0], allocated[1]
+    elif len(allocated) == 1:
+        web_tcp_port = allocated[0]
+        milter_tcp_port = str(int(allocated[0]) + 1)
+    else:
+        web_tcp_port = os.environ.get("WEB_TCP_PORT", "").strip()
+        milter_tcp_port = os.environ.get("MILTER_TCP_PORT", "").strip()
+
+    try:
+        current_node_id = int(os.environ.get("NODE_ID", "1") or 1)
+    except ValueError:
+        current_node_id = 1
+
+    mail_module_uuid = os.environ.get("MAIL_MODULE_UUID", "").strip()
+    milter_bind_host = "127.0.0.1"
+    if mail_module_uuid:
+        try:
+            rdb = agent.redis_connect(use_replica=True)
+            providers = agent.list_service_providers(
+                rdb, "imap", "tcp", {"module_uuid": mail_module_uuid}
+            )
+            if providers:
+                milter_bind_host = _resolve_milter_bind_host(
+                    rdb, current_node_id, providers[0]
+                )
+        except Exception as exc:
+            print(f"Warning: Redis provider lookup during clone skipped: {exc}", file=sys.stderr)
+
+    agent.set_env("WEB_TCP_PORT", str(web_tcp_port))
+    agent.set_env("MILTER_TCP_PORT", str(milter_tcp_port))
+    agent.set_env("MILTER_BIND_HOST", milter_bind_host)
+    if not os.environ.get("MAIL_TOOLBOX_APP_IMAGE", "").strip():
+        agent.set_env("MAIL_TOOLBOX_APP_IMAGE", "ghcr.io/generablack/mail-toolbox-app:latest")
+    agent.dump_env()
+
+    token_path = config_dir / "internal.token"
+    if not token_path.is_file() or not token_path.read_text(encoding="utf-8").strip():
+        fd = os.open(str(token_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(secrets.token_hex(32) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    os.chmod(str(token_path), 0o600)
+
+    for env_name in ("discovery_mail.env", "discovery_ldap.env"):
+        for base in (state_dir, config_dir):
+            target = base / env_name
+            if not target.exists():
+                target.write_text("", encoding="utf-8")
+                os.chmod(str(target), 0o600)
+
+    # Restore online SQLite snapshot if created prior to clone
+    backup_db = data_dir / "toolbox-backup.sqlite"
+    live_db = data_dir / "toolbox.sqlite"
+    if backup_db.is_file():
+        for suffix in ("-wal", "-shm"):
+            Path(str(live_db) + suffix).unlink(missing_ok=True)
+        try:
+            src = sqlite3.connect(str(backup_db))
+            dst = sqlite3.connect(str(live_db))
+            with dst:
+                src.backup(dst)
+            dst.close()
+            src.close()
+        except Exception:
+            shutil.copy2(str(backup_db), str(live_db))
+        backup_db.unlink(missing_ok=True)
+
+    user_domain = os.environ.get("USER_DOMAIN", "").strip()
+    portal_hostname = os.environ.get("PORTAL_HOSTNAME", "").strip().lower()
+    lets_encrypt = _parse_bool(os.environ.get("LETS_ENCRYPT"), default=False)
+    http2https = _parse_bool(os.environ.get("HTTP2HTTPS"), default=True)
+
+    if not mail_module_uuid and not portal_hostname:
+        return 0
+
+    if user_domain:
+        agent.bind_user_domains([user_domain])
+
+    if portal_hostname:
+        traefik_id = agent.resolve_agent_id("traefik@node")
+        agent.assert_exp(traefik_id is not None, "Could not resolve traefik@node")
+        route_res = agent.tasks.run(
+            agent_id=traefik_id,
+            action="set-route",
+            data={
+                "instance": os.environ["MODULE_ID"],
+                "url": f"http://127.0.0.1:{web_tcp_port}",
+                "host": portal_hostname,
+                "lets_encrypt": lets_encrypt,
+                "http2https": http2https,
+            },
+        )
+        agent.assert_exp(route_res.get("exit_code") == 0, "Failed to configure Traefik route on clone")
+
+    subprocess.run(["discover-services"], check=False)
+    subprocess.run(["sync-mailboxes-cache"], check=False)
+
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    subprocess.run(
+        ["systemctl", "--user", "enable", "--now", "mail-toolbox-sync.timer"],
+        check=True,
+    )
+    subprocess.run(["systemctl", "--user", "enable", "mail-toolbox.service"], check=True)
+    subprocess.run(["systemctl", "--user", "restart", "mail-toolbox.service"], check=True)
+
+    token = token_path.read_text(encoding="utf-8").strip()
+    settings_path = config_dir / "toolbox_settings.json"
+    if settings_path.is_file():
+        settings_req = urllib.request.Request(
+            f"http://127.0.0.1:{web_tcp_port}/api/internal/settings",
+            data=settings_path.read_bytes(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Internal-Token": token,
+            },
+            method="PUT",
+        )
+        try:
+            with urllib.request.urlopen(settings_req, timeout=15) as resp:
+                _ = resp.read()
+        except Exception as exc:
+            print(f"Warning: Post-clone settings sync failed: {exc}", file=sys.stderr)
+
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{web_tcp_port}/api/internal/reconcile",
+        data=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Token": token,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            _ = resp.read()
+    except Exception as exc:
+        print(f"Warning: Post-clone reconcile call failed: {exc}", file=sys.stderr)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

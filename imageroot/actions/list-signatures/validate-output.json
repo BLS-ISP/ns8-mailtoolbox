@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "list-signatures output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/list-signatures",
+  "description": "Company signature rules and Before-DKIM Milter listener status",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "signatures",
+    "milter_status"
+  ],
+  "properties": {
+    "signatures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "name",
+          "scope_type",
+          "scope_value",
+          "priority",
+          "enabled",
+          "html_template",
+          "text_template",
+          "reply_mode",
+          "placement"
+        ],
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" },
+          "scope_type": { "type": "string" },
+          "scope_value": { "type": "string" },
+          "priority": { "type": "integer" },
+          "enabled": { "type": "boolean" },
+          "html_template": { "type": "string" },
+          "text_template": { "type": "string" },
+          "auto_plain_from_html": { "type": "boolean" },
+          "reply_mode": { "type": "string" },
+          "placement": { "type": "string" },
+          "updated_at": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "milter_status": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "enabled",
+        "listening",
+        "port",
+        "host_port",
+        "messages_signed",
+        "messages_skipped"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "listening": { "type": "boolean" },
+        "port": { "type": "integer" },
+        "host_port": { "type": "integer" },
+        "messages_signed": { "type": "integer" },
+        "messages_skipped": { "type": "integer" }
+      }
+    }
+  }
+}

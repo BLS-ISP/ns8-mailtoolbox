@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "test-rspamd input",
+  "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/test-rspamd",
+  "description": "Test connectivity and authentication against Rspamd Controller HTTP API",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "rspamd_url": {
+      "type": ["string", "null"]
+    },
+    "rspamd_password": {
+      "type": ["string", "null"]
+    }
+  }
+}

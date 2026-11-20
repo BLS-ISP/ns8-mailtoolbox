@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "run-digest-now output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/run-digest-now",
+  "description": "Summary of triggered quarantine digest run",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "users_checked",
+    "digests_sent",
+    "items_included"
+  ],
+  "properties": {
+    "users_checked": { "type": "integer" },
+    "digests_sent": { "type": "integer" },
+    "items_included": { "type": "integer" }
+  }
+}

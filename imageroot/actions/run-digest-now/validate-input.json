@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "run-digest-now input",
+  "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/run-digest-now",
+  "description": "Trigger Spam Quarantine Digest delivery immediately",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "user": {
+      "type": ["string", "null"]
+    }
+  }
+}

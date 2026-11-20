@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "delete-signature input",
+  "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/delete-signature",
+  "description": "Delete a company signature rule by ID",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "id"
+  ],
+  "properties": {
+    "id": {
+      "type": "integer"
+    }
+  }
+}

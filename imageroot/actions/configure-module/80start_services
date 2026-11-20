@@ -1,0 +1,38 @@
+#!/bin/bash
+
+#
+# Enable and restart NS8 Mail Toolbox systemd user services, then push updated
+# ./config/toolbox_settings.json to the running backend once /api/health is ready.
+#
+
+set -e
+
+systemctl --user daemon-reload
+systemctl --user enable --now mail-toolbox-sync.timer
+systemctl --user enable mail-toolbox.service
+systemctl --user restart mail-toolbox.service
+
+if [[ -f config/toolbox_settings.json && -f config/internal.token && -n "${WEB_TCP_PORT:-}" ]]; then
+    /usr/bin/python3 - <<'PY' || true
+import os
+import pathlib
+import urllib.request
+
+port = os.environ["WEB_TCP_PORT"].strip()
+token = pathlib.Path("config/internal.token").read_text(encoding="utf-8").strip()
+body = pathlib.Path("config/toolbox_settings.json").read_bytes()
+
+req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/api/internal/settings",
+    data=body,
+    headers={
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Internal-Token": token,
+    },
+    method="PUT",
+)
+with urllib.request.urlopen(req, timeout=15) as resp:
+    _ = resp.read()
+PY
+fi

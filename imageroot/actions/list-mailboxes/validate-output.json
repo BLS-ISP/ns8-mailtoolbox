@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "list-mailboxes output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/list-mailboxes",
+  "description": "Mailboxes merged from LDAP, ns8-mail cache, ManageSieve, and SQLite vacation state",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "mailboxes",
+    "summary"
+  ],
+  "properties": {
+    "mailboxes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "user",
+          "display_name",
+          "mail",
+          "aliases",
+          "enabled",
+          "postfix_forwards",
+          "sogo_status",
+          "vacation"
+        ],
+        "properties": {
+          "user": { "type": "string" },
+          "display_name": { "type": "string" },
+          "given_name": { "type": "string" },
+          "sn": { "type": "string" },
+          "mail": { "type": "string" },
+          "aliases": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "department": { "type": "string" },
+          "title": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "postfix_forwards": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "sogo_status": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "has_sogo_script": { "type": "boolean" },
+              "is_active": { "type": "boolean" },
+              "vacation_enabled": { "type": "boolean" },
+              "forward_enabled": { "type": "boolean" },
+              "forward_address": { "type": "string" }
+            }
+          },
+          "vacation": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "active_now": { "type": "boolean" },
+              "start_date": { "type": ["string", "null"] },
+              "end_date": { "type": ["string", "null"] },
+              "subject": { "type": "string" },
+              "body": { "type": "string" },
+              "forward_enabled": { "type": "boolean" },
+              "forward_address": { "type": "string" },
+              "keep_copy": { "type": "boolean" },
+              "updated_by": { "type": "string" },
+              "updated_at": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "total",
+        "central_vacation_active",
+        "sogo_vacation_active",
+        "forwards_active"
+      ],
+      "properties": {
+        "total": { "type": "integer" },
+        "central_vacation_active": { "type": "integer" },
+        "sogo_vacation_active": { "type": "integer" },
+        "forwards_active": { "type": "integer" }
+      }
+    }
+  }
+}

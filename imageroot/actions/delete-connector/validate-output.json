@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "delete-connector output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/delete-connector",
+  "description": "Deleted mail connector confirmation",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "deleted"
+  ],
+  "properties": {
+    "deleted": { "type": "boolean" },
+    "id": { "type": "integer" }
+  }
+}

@@ -1,0 +1,41 @@
+#!/bin/bash
+
+#
+# Create a consistent online SQLite backup snapshot (`data/toolbox-backup.sqlite`)
+# prior to Restic cluster backup (`imageroot/etc/state-include.conf`).
+#
+
+set -e
+
+if [[ ! -f data/toolbox.sqlite ]]; then
+    exit 0
+fi
+
+mkdir -p data
+
+# Prefer running inside the live container via app.backend.backup_db
+if podman exec mail-toolbox-app python -m app.backend.backup_db /app/data/toolbox-backup.sqlite >/dev/null 2>&1; then
+    exit 0
+fi
+
+# Fallback 1: Host Python sqlite3 online backup API when container is stopped
+if /usr/bin/python3 - <<'PY'
+import sqlite3
+
+src = sqlite3.connect("data/toolbox.sqlite")
+dst = sqlite3.connect("data/toolbox-backup.sqlite")
+with dst:
+    src.backup(dst)
+dst.close()
+src.close()
+PY
+then
+    exit 0
+fi
+
+# Fallback 2: Host sqlite3 CLI or atomic copy
+if command -v sqlite3 >/dev/null 2>&1; then
+    sqlite3 data/toolbox.sqlite ".backup 'data/toolbox-backup.sqlite'"
+else
+    cp -f data/toolbox.sqlite data/toolbox-backup.sqlite
+fi

@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "preview-signature output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/preview-signature",
+  "description": "Rendered HTML and Plaintext signature preview with resolved AD/LDAP attributes",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "matched_rule_name",
+    "attributes",
+    "rendered_html",
+    "rendered_text"
+  ],
+  "properties": {
+    "matched_rule_name": { "type": "string" },
+    "attributes": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "rendered_html": { "type": "string" },
+    "rendered_text": { "type": "string" }
+  }
+}

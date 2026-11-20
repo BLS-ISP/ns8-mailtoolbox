@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "save-signature input",
+  "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/save-signature",
+  "description": "Create or update a central company signature rule",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "name",
+    "scope_type"
+  ],
+  "properties": {
+    "id": {
+      "type": ["integer", "null"]
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope_type": {
+      "type": "string",
+      "enum": ["group", "domain", "default"]
+    },
+    "scope_value": {
+      "type": "string"
+    },
+    "priority": {
+      "type": "integer"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "html_template": {
+      "type": "string"
+    },
+    "text_template": {
+      "type": "string"
+    },
+    "auto_plain_from_html": {
+      "type": "boolean"
+    },
+    "reply_mode": {
+      "type": "string",
+      "enum": ["append_once", "always", "first_only"]
+    },
+    "placement": {
+      "type": "string",
+      "enum": ["below_reply", "bottom"]
+    }
+  }
+}

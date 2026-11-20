@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+
+"""Test Rspamd Controller HTTP connectivity via POST /api/internal/mail-tracking/test-rspamd (with direct fallback before initial configure)."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+def _direct_rspamd_probe(state_dir: Path, payload: dict) -> dict:
+    saved_pass = ""
+    saved_url = "http://127.0.0.1:11334"
+    settings_path = state_dir / "config" / "toolbox_settings.json"
+    if settings_path.is_file():
+        try:
+            saved = json.loads(settings_path.read_text(encoding="utf-8"))
+            saved_pass = str(saved.get("rspamd_password") or "")
+            saved_url = str(saved.get("rspamd_url") or saved_url)
+        except Exception:
+            pass
+
+    base_url = str(payload.get("rspamd_url") or saved_url or "http://127.0.0.1:11334").strip().rstrip("/")
+    password = str(payload.get("rspamd_password") or saved_pass or "")
+    headers = {"Accept": "application/json"}
+    if password:
+        headers["Password"] = password
+
+    req = urllib.request.Request(f"{base_url}/history", headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            rows = data.get("rows", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            return {
+                "ok": True,
+                "message": "Rspamd Controller reachable",
+                "entries_available": len(rows),
+            }
+    except urllib.error.HTTPError as exc:
+        return {
+            "ok": False,
+            "message": f"Rspamd HTTP {exc.code}: {exc.reason}",
+            "entries_available": 0,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": str(exc),
+            "entries_available": 0,
+        }
+
+
+def main() -> int:
+    raw = sys.stdin.read().strip()
+    payload = json.loads(raw) if raw else {}
+
+    web_tcp_port = os.environ.get("WEB_TCP_PORT", "").strip()
+    state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
+    token_path = state_dir / "config" / "internal.token"
+
+    if web_tcp_port and token_path.is_file():
+        token = token_path.read_text(encoding="utf-8").strip()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{web_tcp_port}/api/internal/mail-tracking/test-rspamd",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "X-Internal-Token": token,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                sys.stdout.write(resp.read().decode("utf-8"))
+                return 0
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            print(f"Backend HTTP {exc.code}: {err_body}", file=sys.stderr)
+            return 1
+        except Exception:
+            # Fall back to direct probe when container is not started yet (before initial configure)
+            pass
+
+    json.dump(_direct_rspamd_probe(state_dir, payload), sys.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

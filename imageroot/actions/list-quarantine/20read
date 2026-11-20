@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+
+"""Retrieve quarantined Junk messages, digest status, and allowlist via GET /api/internal/quarantine."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+
+def _unconfigured_response() -> dict:
+    digest_raw = os.environ.get("DIGEST_ENABLED", "False").strip().lower()
+    return {
+        "items": [],
+        "digest_status": {
+            "enabled": digest_raw in ("1", "true", "yes", "on"),
+            "digest_time": os.environ.get("DIGEST_TIME", "07:30").strip() or "07:30",
+            "timezone": os.environ.get("TIMEZONE", "Europe/Berlin").strip() or "Europe/Berlin",
+            "last_run_at": "",
+            "last_digests_sent": 0,
+        },
+        "allowlist": [],
+    }
+
+
+def main() -> int:
+    query_params: dict[str, str] = {}
+    try:
+        raw = sys.stdin.read().strip()
+        if raw:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                for key in ("user", "search", "limit"):
+                    val = parsed.get(key)
+                    if val is not None and str(val).strip() != "":
+                        query_params[key] = str(val).strip()
+    except Exception:
+        query_params = {}
+
+    mail_module_uuid = os.environ.get("MAIL_MODULE_UUID", "").strip()
+    portal_hostname = os.environ.get("PORTAL_HOSTNAME", "").strip()
+    web_tcp_port = os.environ.get("WEB_TCP_PORT", "").strip()
+    state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
+    token_path = state_dir / "config" / "internal.token"
+
+    if not mail_module_uuid or not portal_hostname or not web_tcp_port or not token_path.is_file():
+        json.dump(_unconfigured_response(), sys.stdout)
+        return 0
+
+    token = token_path.read_text(encoding="utf-8").strip()
+    base_url = f"http://127.0.0.1:{web_tcp_port}/api/internal/quarantine"
+    qs = urllib.parse.urlencode(query_params)
+    url = f"{base_url}?{qs}" if qs else base_url
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "X-Internal-Token": token,
+        },
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            sys.stdout.write(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")
+        print(f"Backend HTTP {exc.code}: {err_body}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"Failed to query quarantine: {exc}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

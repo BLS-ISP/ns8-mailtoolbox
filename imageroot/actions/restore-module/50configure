@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+
+"""Re-bind user domain, resolve WireGuard/localhost Milter bind IP, configure Traefik, start services, and trigger ManageSieve reconciliation after restore."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+import agent
+import agent.tasks
+
+
+def _parse_bool(raw: str | None, default: bool = False) -> bool:
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _resolve_milter_bind_host(rdb: Any, node_id: int, imap_provider: dict[str, Any]) -> str:
+    try:
+        mail_node_id = int(imap_provider.get("node", node_id) or node_id)
+    except (TypeError, ValueError):
+        mail_node_id = node_id
+
+    if node_id == mail_node_id:
+        return "127.0.0.1"
+
+    try:
+        raw_vpn = rdb.hget(f"node/{node_id}/vpn", "ip_address")
+        vpn_ip = (
+            raw_vpn.decode("utf-8", errors="replace").strip()
+            if isinstance(raw_vpn, bytes)
+            else str(raw_vpn or "").strip()
+        )
+        if vpn_ip and vpn_ip != "0.0.0.0":
+            return vpn_ip
+    except Exception as exc:
+        print(f"Warning: Could not resolve WireGuard VPN IP for node {node_id}: {exc}", file=sys.stderr)
+
+    return "127.0.0.1"
+
+
+def main() -> int:
+    state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
+    mail_module_uuid = os.environ.get("MAIL_MODULE_UUID", "").strip()
+    mail_module_id = os.environ.get("MAIL_MODULE_ID", "").strip()
+    user_domain = os.environ.get("USER_DOMAIN", "").strip()
+    portal_hostname = os.environ.get("PORTAL_HOSTNAME", "").strip().lower()
+    lets_encrypt = _parse_bool(os.environ.get("LETS_ENCRYPT"), default=False)
+    http2https = _parse_bool(os.environ.get("HTTP2HTTPS"), default=True)
+    web_tcp_port = os.environ["WEB_TCP_PORT"]
+
+    try:
+        current_node_id = int(os.environ.get("NODE_ID", "1") or 1)
+    except ValueError:
+        current_node_id = 1
+
+    if not mail_module_uuid and not portal_hostname:
+        return 0
+
+    rdb = agent.redis_connect(use_replica=True)
+    all_imap = agent.list_service_providers(rdb, "imap", "tcp") or []
+    matched = [p for p in all_imap if p.get("module_uuid") == mail_module_uuid]
+    if not matched and mail_module_id:
+        matched = [p for p in all_imap if p.get("module_id") == mail_module_id]
+    if not matched and user_domain:
+        matched = [p for p in all_imap if p.get("user_domain") == user_domain]
+
+    milter_bind_host = "127.0.0.1"
+    if matched:
+        provider = matched[0]
+        mail_module_uuid = str(provider.get("module_uuid", mail_module_uuid)).strip()
+        mail_module_id = str(provider.get("module_id", mail_module_id)).strip()
+        user_domain = str(provider.get("user_domain", user_domain)).strip()
+        milter_bind_host = _resolve_milter_bind_host(rdb, current_node_id, provider)
+        agent.set_env("MAIL_MODULE_UUID", mail_module_uuid)
+        agent.set_env("MAIL_MODULE_ID", mail_module_id)
+        agent.set_env("USER_DOMAIN", user_domain)
+        agent.set_env("MILTER_BIND_HOST", milter_bind_host)
+        agent.dump_env()
+    else:
+        agent.set_env("MILTER_BIND_HOST", milter_bind_host)
+        agent.dump_env()
+
+    if user_domain:
+        agent.bind_user_domains([user_domain])
+
+    if portal_hostname:
+        traefik_id = agent.resolve_agent_id("traefik@node")
+        agent.assert_exp(traefik_id is not None, "Could not resolve traefik@node")
+        route_res = agent.tasks.run(
+            agent_id=traefik_id,
+            action="set-route",
+            data={
+                "instance": os.environ["MODULE_ID"],
+                "url": f"http://127.0.0.1:{web_tcp_port}",
+                "host": portal_hostname,
+                "lets_encrypt": lets_encrypt,
+                "http2https": http2https,
+            },
+        )
+        agent.assert_exp(route_res.get("exit_code") == 0, "Failed to restore Traefik route")
+
+    child_env = os.environ.copy()
+    child_env.update(
+        {
+            "MAIL_MODULE_UUID": mail_module_uuid,
+            "MAIL_MODULE_ID": mail_module_id,
+            "USER_DOMAIN": user_domain,
+            "MILTER_BIND_HOST": milter_bind_host,
+        }
+    )
+    subprocess.run(["discover-services"], env=child_env, check=False)
+    subprocess.run(["sync-mailboxes-cache"], env=child_env, check=False)
+
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    subprocess.run(
+        ["systemctl", "--user", "enable", "--now", "mail-toolbox-sync.timer"],
+        check=True,
+    )
+    subprocess.run(["systemctl", "--user", "enable", "mail-toolbox.service"], check=True)
+    subprocess.run(["systemctl", "--user", "restart", "mail-toolbox.service"], check=True)
+
+    # Sync restored toolbox_settings.json and trigger ManageSieve reconciliation
+    token_path = state_dir / "config" / "internal.token"
+    settings_path = state_dir / "config" / "toolbox_settings.json"
+    if token_path.is_file():
+        token = token_path.read_text(encoding="utf-8").strip()
+        if settings_path.is_file():
+            settings_req = urllib.request.Request(
+                f"http://127.0.0.1:{web_tcp_port}/api/internal/settings",
+                data=settings_path.read_bytes(),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Internal-Token": token,
+                },
+                method="PUT",
+            )
+            try:
+                with urllib.request.urlopen(settings_req, timeout=15) as resp:
+                    _ = resp.read()
+            except Exception as exc:
+                print(f"Warning: Post-restore settings sync failed: {exc}", file=sys.stderr)
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{web_tcp_port}/api/internal/reconcile",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "X-Internal-Token": token,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                _ = resp.read()
+        except Exception as exc:
+            print(f"Warning: Post-restore reconcile call failed: {exc}", file=sys.stderr)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "test-connector output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/test-connector",
+  "description": "Connectivity and mailbox count test result for an external POP3/IMAP server",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "ok",
+    "message",
+    "message_count"
+  ],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "message": { "type": "string" },
+    "message_count": { "type": "integer" }
+  }
+}

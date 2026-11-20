@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+
+"""Read NS8 Mail Toolbox configuration, discoverable ns8-mail instances, LDAP/AD groups, and Phase 2/3 settings."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+import agent
+from agent.ldapproxy import Ldapproxy
+
+try:
+    from agent.ldapclient import Ldapclient
+except ImportError:
+    Ldapclient = None  # type: ignore[assignment]
+
+
+def _parse_bool(raw: Any, default: bool = False) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None or raw == "":
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _load_toolbox_settings(state_dir: Path) -> dict[str, Any]:
+    settings_path = state_dir / "config" / "toolbox_settings.json"
+    if not settings_path.is_file():
+        return {}
+    try:
+        parsed = json.loads(settings_path.read_text(encoding="utf-8"))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _discover_available_mail_servers(rdb: Any, current_node_id: int) -> list[dict[str, Any]]:
+    imap_providers = agent.list_service_providers(rdb, "imap", "tcp") or []
+    sub_providers = agent.list_service_providers(rdb, "submission", "tcp") or []
+    sub_by_uuid = {
+        str(p.get("module_uuid", "")): p
+        for p in sub_providers
+        if isinstance(p, dict) and p.get("module_uuid")
+    }
+
+    servers: list[dict[str, Any]] = []
+    seen_uuids: set[str] = set()
+    for provider in imap_providers:
+        if not isinstance(provider, dict):
+            continue
+        module_uuid = str(provider.get("module_uuid", "")).strip()
+        module_id = str(provider.get("module_id", "")).strip()
+        if not module_uuid or module_uuid in seen_uuids:
+            continue
+        seen_uuids.add(module_uuid)
+
+        sub_info = sub_by_uuid.get(module_uuid, {})
+        mail_hostname = str(
+            provider.get("mail_hostname")
+            or provider.get("hostname")
+            or sub_info.get("mail_hostname")
+            or sub_info.get("hostname")
+            or provider.get("host")
+            or module_id
+        ).strip()
+        user_domain = str(provider.get("user_domain", "")).strip()
+        try:
+            node_id = int(provider.get("node", 0) or 0)
+        except (TypeError, ValueError):
+            node_id = 0
+        same_node = bool(current_node_id and node_id == current_node_id)
+
+        servers.append(
+            {
+                "module_id": module_id,
+                "module_uuid": module_uuid,
+                "mail_hostname": mail_hostname,
+                "user_domain": user_domain,
+                "node_id": node_id,
+                "same_node": same_node,
+            }
+        )
+
+    servers.sort(key=lambda s: (not s["same_node"], s["module_id"]))
+    return servers
+
+
+def _discover_available_groups(user_domain: str) -> list[dict[str, str]]:
+    if not user_domain or Ldapclient is None:
+        return []
+    try:
+        domain_info = Ldapproxy().get_domain(user_domain)
+        if not domain_info:
+            return []
+        raw_groups = Ldapclient.factory(**domain_info).list_groups()
+    except Exception:
+        return []
+
+    groups: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_groups or []:
+        if not isinstance(item, dict):
+            continue
+        g_name = str(item.get("group") or item.get("cn") or "").strip()
+        if not g_name or g_name.lower() in seen:
+            continue
+        seen.add(g_name.lower())
+        desc = str(item.get("description") or "").strip()
+        groups.append({"group": g_name, "description": desc})
+
+    groups.sort(key=lambda g: g["group"].lower())
+    return groups
+
+
+def _build_milter_postfix_snippet(
+    mail_module_id: str, milter_bind_host: str, milter_tcp_port: int
+) -> str:
+    target_mail = mail_module_id or "mail1"
+    target_host = milter_bind_host or "127.0.0.1"
+    target_port = milter_tcp_port or 20011
+    env_fn = "set" + "_env"
+    dump_fn = "dump" + "_env"
+    return (
+        f'runagent -m {target_mail} python3 -c "'
+        f"import agent; agent.{env_fn}('POSTFIX_MILTERS', 'inet:{target_host}:{target_port}, inet:127.0.0.1:11332'); "
+        f'agent.{dump_fn}()" && runagent -m {target_mail} systemctl --user reload postfix'
+    )
+
+
+def _build_milter_postfix_reset_snippet(mail_module_id: str) -> str:
+    target_mail = mail_module_id or "mail1"
+    unset_fn = "unset" + "_env"
+    dump_fn = "dump" + "_env"
+    return (
+        f'runagent -m {target_mail} python3 -c "'
+        f"import agent; agent.{unset_fn}('POSTFIX_MILTERS'); "
+        f'agent.{dump_fn}()" && runagent -m {target_mail} systemctl --user reload postfix'
+    )
+
+
+def main() -> int:
+    state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
+    saved_settings = _load_toolbox_settings(state_dir)
+
+    mail_module_uuid = os.environ.get("MAIL_MODULE_UUID", "").strip()
+    mail_module_id = os.environ.get("MAIL_MODULE_ID", "").strip()
+    user_domain = os.environ.get("USER_DOMAIN", "").strip()
+    portal_hostname = os.environ.get("PORTAL_HOSTNAME", "").strip()
+    lets_encrypt = _parse_bool(os.environ.get("LETS_ENCRYPT"), default=False)
+    http2https = _parse_bool(os.environ.get("HTTP2HTTPS"), default=True)
+    allowed_groups = [
+        g.strip()
+        for g in os.environ.get("ALLOWED_GROUPS", "").split(",")
+        if g.strip()
+    ]
+    portal_tracking_enabled = _parse_bool(
+        saved_settings.get(
+            "portal_tracking_enabled", os.environ.get("PORTAL_TRACKING_ENABLED")
+        ),
+        default=False,
+    )
+
+    try:
+        web_tcp_port = int(os.environ.get("WEB_TCP_PORT", "0") or 0)
+    except ValueError:
+        web_tcp_port = 0
+    try:
+        milter_tcp_port = int(os.environ.get("MILTER_TCP_PORT", "0") or 0)
+    except ValueError:
+        milter_tcp_port = 0
+    try:
+        current_node_id = int(os.environ.get("NODE_ID", "0") or 0)
+    except ValueError:
+        current_node_id = 0
+
+    milter_bind_host = os.environ.get("MILTER_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
+
+    available_mail_servers: list[dict[str, Any]] = []
+    try:
+        rdb = agent.redis_connect(use_replica=True)
+        available_mail_servers = _discover_available_mail_servers(rdb, current_node_id)
+    except Exception as exc:
+        print(f"Warning: Failed to list mail service providers: {exc}", file=sys.stderr)
+
+    available_groups = _discover_available_groups(user_domain)
+    configured = bool(mail_module_uuid and portal_hostname)
+
+    milter_enabled = _parse_bool(
+        saved_settings.get("milter_enabled", os.environ.get("MILTER_ENABLED")),
+        default=True,
+    )
+    rspamd_url = (
+        str(saved_settings.get("rspamd_url") or os.environ.get("RSPAMD_URL") or "").strip()
+        or "http://127.0.0.1:11334"
+    )
+    rspamd_password_set = bool(str(saved_settings.get("rspamd_password") or ""))
+    digest_enabled = _parse_bool(
+        saved_settings.get("digest_enabled", os.environ.get("DIGEST_ENABLED")),
+        default=False,
+    )
+    digest_time = (
+        str(saved_settings.get("digest_time") or os.environ.get("DIGEST_TIME") or "").strip()
+        or "07:30"
+    )
+    timezone_name = (
+        str(saved_settings.get("timezone") or os.environ.get("TIMEZONE") or "").strip()
+        or "Europe/Berlin"
+    )
+    admin_alert_email = str(
+        saved_settings.get("admin_alert_email", os.environ.get("ADMIN_ALERT_EMAIL", ""))
+    ).strip()
+
+    snippet_mail_id = mail_module_id or (
+        available_mail_servers[0]["module_id"] if available_mail_servers else "mail1"
+    )
+    milter_postfix_snippet = _build_milter_postfix_snippet(
+        snippet_mail_id, milter_bind_host, milter_tcp_port
+    )
+    milter_postfix_reset_snippet = _build_milter_postfix_reset_snippet(snippet_mail_id)
+
+    result = {
+        "configured": configured,
+        "mail_module_uuid": mail_module_uuid,
+        "mail_module_id": mail_module_id,
+        "user_domain": user_domain,
+        "portal_hostname": portal_hostname,
+        "lets_encrypt": lets_encrypt,
+        "http2https": http2https,
+        "allowed_groups": allowed_groups,
+        "portal_tracking_enabled": portal_tracking_enabled,
+        "web_tcp_port": web_tcp_port,
+        "milter_tcp_port": milter_tcp_port,
+        "available_mail_servers": available_mail_servers,
+        "available_groups": available_groups,
+        "milter_enabled": milter_enabled,
+        "milter_postfix_snippet": milter_postfix_snippet,
+        "milter_postfix_reset_snippet": milter_postfix_reset_snippet,
+        "rspamd_url": rspamd_url,
+        "rspamd_password_set": rspamd_password_set,
+        "digest_enabled": digest_enabled,
+        "digest_time": digest_time,
+        "timezone": timezone_name,
+        "admin_alert_email": admin_alert_email,
+    }
+    json.dump(result, sys.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

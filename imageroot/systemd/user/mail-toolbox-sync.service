@@ -1,0 +1,9 @@
+[Unit]
+Description=Synchronize NS8 Mail Toolbox Mailbox & Alias Cache
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=%E/state/environment
+WorkingDirectory=%E/state
+ExecStart=/usr/local/bin/runagent sync-mailboxes-cache

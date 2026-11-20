@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "test-rspamd output",
+  "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/test-rspamd",
+  "description": "Rspamd Controller connectivity test result",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "ok",
+    "message",
+    "entries_available"
+  ],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "message": { "type": "string" },
+    "entries_available": { "type": "integer" }
+  }
+}

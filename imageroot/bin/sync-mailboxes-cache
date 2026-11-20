@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+
+"""Synchronize mailbox status, aliases, and Postfix forwards from ns8-mail into ./config/mailboxes_cache.json."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import agent
+import agent.tasks
+
+
+def _load_env_fallback(state_dir: Path) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    env_file = state_dir / "environment"
+    if env_file.is_file():
+        if hasattr(agent, "read_envfile"):
+            try:
+                merged.update(agent.read_envfile(str(env_file)))
+            except Exception:
+                pass
+        if not merged:
+            for raw_line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                merged[key.strip()] = val.strip().strip("\"'")
+    merged.update(os.environ)
+    return merged
+
+
+def _parse_task_output(result: dict[str, Any]) -> Any:
+    output = result.get("output")
+    if isinstance(output, (dict, list)):
+        return output
+    if isinstance(output, str):
+        text = output.strip()
+        if text:
+            return json.loads(text)
+    return {}
+
+
+def _atomic_write_json(dest: Path, payload: dict[str, Any], mode: int = 0o600) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dest.parent / f".{dest.name}.tmp.{os.getpid()}"
+    content = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(str(tmp_path), mode)
+        os.replace(str(tmp_path), str(dest))
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _extract_forward_destinations(mailbox_item: dict[str, Any]) -> list[str]:
+    results: list[str] = []
+    forward = mailbox_item.get("forward")
+    raw_dests: list[Any] = []
+    if isinstance(forward, dict):
+        raw_dests = forward.get("destinations") or []
+    elif isinstance(mailbox_item.get("postfix_forwards"), list):
+        raw_dests = mailbox_item["postfix_forwards"]
+
+    for item in raw_dests:
+        if isinstance(item, str) and item.strip():
+            results.append(item.strip())
+        elif isinstance(item, dict):
+            val = (
+                item.get("address")
+                or item.get("mail")
+                or item.get("name")
+                or item.get("dest")
+                or ""
+            )
+            if isinstance(val, str) and val.strip():
+                results.append(val.strip())
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for addr in results:
+        low = addr.lower()
+        if low not in seen:
+            seen.add(low)
+            deduped.append(addr)
+    return deduped
+
+
+def _destination_matches_user(dest: Any, user: str) -> bool:
+    u_low = user.lower()
+    if isinstance(dest, str):
+        d_clean = dest.strip().lower()
+        if d_clean == u_low:
+            return True
+        if "@" in d_clean and d_clean.split("@", 1)[0] == u_low:
+            return True
+        return False
+    if isinstance(dest, dict):
+        dtype = str(dest.get("dtype") or dest.get("type") or "user").lower()
+        if dtype not in ("user", "mailbox", "account", ""):
+            return False
+        for key in ("name", "user", "dest", "id"):
+            val = dest.get(key)
+            if isinstance(val, str):
+                v_low = val.strip().lower()
+                if v_low == u_low or ("@" in v_low and v_low.split("@", 1)[0] == u_low):
+                    return True
+    return False
+
+
+def _format_record_addresses(record: dict[str, Any], known_domains: list[str]) -> list[str]:
+    for full_key in ("address", "mail", "email"):
+        val = record.get(full_key)
+        if isinstance(val, str) and "@" in val and not val.endswith("@*"):
+            return [val.strip().lower()]
+
+    local = str(record.get("local") or record.get("alocal") or "").strip()
+    domain = str(record.get("domain") or "").strip()
+    if not local:
+        return []
+    if "@" in local and not domain:
+        return [local.lower()]
+    if domain == "*":
+        return [f"{local}@{dom}".lower() for dom in known_domains if dom and dom != "*"]
+    if domain:
+        return [f"{local}@{domain}".lower()]
+    return []
+
+
+def _collect_address_records(addr_payload: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    records: list[dict[str, Any]] = []
+    domains: set[str] = set()
+
+    if isinstance(addr_payload, list):
+        records.extend(r for r in addr_payload if isinstance(r, dict))
+    elif isinstance(addr_payload, dict):
+        for key in ("addresses", "destmap", "addalias", "adduser", "aliases"):
+            bucket = addr_payload.get(key)
+            if isinstance(bucket, list):
+                records.extend(r for r in bucket if isinstance(r, dict))
+        for dom in addr_payload.get("domains", []) or []:
+            if isinstance(dom, str) and dom != "*":
+                domains.add(dom.strip().lower())
+            elif isinstance(dom, dict) and dom.get("domain"):
+                domains.add(str(dom["domain"]).strip().lower())
+
+    for rec in records:
+        dom = str(rec.get("domain") or "").strip().lower()
+        if dom and dom != "*":
+            domains.add(dom)
+        for full_key in ("address", "mail", "email"):
+            val = rec.get(full_key)
+            if isinstance(val, str) and "@" in val:
+                d_part = val.rsplit("@", 1)[-1].strip().lower()
+                if d_part and d_part != "*":
+                    domains.add(d_part)
+
+    return records, sorted(domains)
+
+
+def main() -> int:
+    state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
+    config_dir = state_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    env = _load_env_fallback(state_dir)
+    mail_id = env.get("MAIL_MODULE_ID", "").strip()
+    if not mail_id:
+        return 0
+
+    mb_res = agent.tasks.run(
+        agent_id=f"module/{mail_id}",
+        action="list-user-mailboxes",
+    )
+    if mb_res.get("exit_code") != 0:
+        print(
+            f"Warning: module/{mail_id}/list-user-mailboxes failed with exit_code={mb_res.get('exit_code')}",
+            file=sys.stderr,
+        )
+        return 1
+
+    mb_payload = _parse_task_output(mb_res)
+    if isinstance(mb_payload, dict):
+        raw_mailboxes = (
+            mb_payload.get("user_mailboxes")
+            if "user_mailboxes" in mb_payload
+            else mb_payload.get("mailboxes", [])
+        )
+    elif isinstance(mb_payload, list):
+        raw_mailboxes = mb_payload
+    else:
+        raw_mailboxes = []
+
+    addr_records: list[dict[str, Any]] = []
+    known_domains: list[str] = []
+    addr_res = agent.tasks.run(
+        agent_id=f"module/{mail_id}",
+        action="list-addresses",
+    )
+    if addr_res.get("exit_code") == 0:
+        addr_payload = _parse_task_output(addr_res)
+        addr_records, known_domains = _collect_address_records(addr_payload)
+    else:
+        print(
+            f"Warning: module/{mail_id}/list-addresses exited with {addr_res.get('exit_code')}",
+            file=sys.stderr,
+        )
+
+    mailboxes_out: list[dict[str, Any]] = []
+    for mb in raw_mailboxes:
+        if not isinstance(mb, dict):
+            continue
+        user = str(mb.get("user") or "").strip()
+        if not user:
+            continue
+
+        enabled = bool(mb.get("enabled", True))
+        postfix_forwards = _extract_forward_destinations(mb)
+
+        alias_set: set[str] = set()
+        # Include any direct aliases attached to the mailbox entry
+        for direct_alias in mb.get("aliases", []) or []:
+            if isinstance(direct_alias, str) and "@" in direct_alias:
+                alias_set.add(direct_alias.strip().lower())
+
+        # Match records from list-addresses (destmap / addalias / adduser)
+        for rec in addr_records:
+            dests: list[Any] = []
+            if isinstance(rec.get("destinations"), list):
+                dests.extend(rec["destinations"])
+            if "dest" in rec:
+                dests.append(rec["dest"])
+            if "user" in rec and rec.get("atype") in ("adduser", "addalias", None):
+                dests.append(rec["user"])
+
+            if any(_destination_matches_user(d, user) for d in dests):
+                for addr in _format_record_addresses(rec, known_domains):
+                    alias_set.add(addr)
+
+        mailboxes_out.append(
+            {
+                "user": user,
+                "enabled": enabled,
+                "aliases": sorted(alias_set),
+                "postfix_forwards": postfix_forwards,
+            }
+        )
+
+    mailboxes_out.sort(key=lambda item: item["user"].lower())
+
+    cache_doc = {
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "mailboxes": mailboxes_out,
+    }
+    _atomic_write_json(config_dir / "mailboxes_cache.json", cache_doc, 0o600)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
