@@ -89,7 +89,7 @@
                         </div>
                         <div class="tpl-card-badges">
                           <NsTag
-                            :label="(tpl.lang || 'de').toUpperCase()"
+                            :label="(tpl.lang || 'en').toUpperCase()"
                             kind="cyan"
                             size="sm"
                           />
@@ -120,11 +120,11 @@
                             v-model="currentTemplate.lang"
                             :disabled="loading.setTemplates"
                           >
-                            <cv-select-option value="de">
-                              Deutsch (DE)
-                            </cv-select-option>
                             <cv-select-option value="en">
                               English (EN)
+                            </cv-select-option>
+                            <cv-select-option value="de">
+                              Deutsch (DE)
                             </cv-select-option>
                           </cv-select>
                         </div>
@@ -477,13 +477,18 @@ export default {
     },
     addTemplate() {
       const id = `custom_${Date.now()}`;
+      const isDe = this.$i18n.locale === "de";
       this.editableTemplates.push({
         id,
         name: this.$t("templates.new_template_default_name"),
-        lang: this.$i18n.locale === "de" ? "de" : "en",
+        lang: isDe ? "de" : "en",
         is_default: false,
-        subject: "Abwesenheitsnotiz: {{displayName}}",
-        body: "Guten Tag,\n\nvielen Dank für Ihre Nachricht. Ich bin derzeit nicht im Haus{{#endDate}} (voraussichtlich bis einschließlich {{endDate}}){{/endDate}}.\n{{#deputyEmail}}\nIn dringenden Fällen wenden Sie sich bitte an {{deputyEmail}}.\n{{/deputyEmail}}\nMit freundlichen Grüßen\n{{displayName}}",
+        subject: isDe
+          ? "Abwesenheitsnotiz: {{displayName}}"
+          : "Out of Office: {{displayName}}",
+        body: isDe
+          ? "Guten Tag,\n\nvielen Dank für Ihre Nachricht. Ich bin derzeit nicht im Haus{{#endDate}} (voraussichtlich bis einschließlich {{endDate}}){{/endDate}}.\n{{#deputyEmail}}\nIn dringenden Fällen wenden Sie sich bitte an {{deputyEmail}}.\n{{/deputyEmail}}\nMit freundlichen Grüßen\n{{displayName}}"
+          : "Hello,\n\nThank you for your message. I am currently out of the office{{#endDate}} until {{endDate}}{{/endDate}}.\n\n{{#deputyEmail}}For urgent matters, please contact {{deputyEmail}}.\n\n{{/deputyEmail}}Best regards\n{{displayName}}",
       });
       this.activeTemplateIndex = this.editableTemplates.length - 1;
     },
@@ -594,7 +599,7 @@ export default {
       this.editableTemplates = list.map((tpl) => ({
         id: tpl.id,
         name: tpl.name || "",
-        lang: tpl.lang || "de",
+        lang: tpl.lang || "en",
         is_default: Boolean(tpl.is_default),
         subject: tpl.subject || "",
         body: tpl.body || "",
@@ -676,7 +681,7 @@ export default {
         this.editableTemplates = taskResult.output.templates.map((tpl) => ({
           id: tpl.id,
           name: tpl.name || "",
-          lang: tpl.lang || "de",
+          lang: tpl.lang || "en",
           is_default: Boolean(tpl.is_default),
           subject: tpl.subject || "",
           body: tpl.body || "",

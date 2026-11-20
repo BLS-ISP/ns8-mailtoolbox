@@ -132,7 +132,7 @@
                 :key="tpl.id"
                 :value="tpl.id"
               >
-                {{ tpl.name }} ({{ (tpl.lang || "de").toUpperCase() }})
+                {{ tpl.name }} ({{ (tpl.lang || "en").toUpperCase() }})
               </cv-select-option>
             </cv-select>
           </div>
@@ -351,7 +351,7 @@ export default {
       if (!tpl) {
         return;
       }
-      const lang = tpl.lang || this.$i18n.locale || "de";
+      const lang = tpl.lang || this.$i18n.locale || "en";
       const renderCtx = {
         mailbox: this.mailbox,
         startDate: this.form.start_date,

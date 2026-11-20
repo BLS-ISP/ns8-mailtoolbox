@@ -11,7 +11,8 @@
     "show_more": "Show more",
     "clear_search": "Clear search",
     "no_results": "No results",
-    "no_results_description": "Try changing your search query or status filter"
+    "no_results_description": "Try changing your search query or status filter",
+    "language": "Language"
   },
   "pagination": {
     "items_per_page": "Items per page",
@@ -285,7 +286,7 @@
     "create_modal_title": "Add external POP3/IMAP account",
     "edit_modal_title": "Edit connector: {name}",
     "name_label": "Description / Account label",
-    "name_placeholder": "e.g. Strato info@firma.de",
+    "name_placeholder": "e.g. External info@example.com",
     "preset_label": "Provider quick preset",
     "preset_custom": "Custom server",
     "target_mailbox_label": "Local target mailbox",
@@ -383,7 +384,7 @@
     "custom_group_label": "Custom group",
     "selected_label": "selected",
     "add_custom_group_label": "Add custom group name (optional)",
-    "add_custom_group_placeholder": "e.g. mail-office or sekretariat",
+    "add_custom_group_placeholder": "e.g. mail-office or secretariat",
     "add_group_btn": "Add group",
     "allowed_groups_required": "Specify at least one authorized AD/LDAP group (e.g. mail-office)",
     "portal_tracking_enabled_label": "Allow read-only mail tracking search in Secretariat Portal",

@@ -30,14 +30,25 @@ for (const f in Filters) {
 Vue.config.productionTip = false;
 
 import VueI18n from "vue-i18n";
-import { bundledMessages, loadLanguage } from "./i18n";
+import { bundledMessages } from "./i18n";
+
+export const COCKPIT_LANG_STORAGE_KEY = "ns8_mail_toolbox_cockpit_lang";
+
+function getInitialLocale() {
+  try {
+    const saved = window.localStorage.getItem(COCKPIT_LANG_STORAGE_KEY);
+    if (saved === "en" || saved === "de") {
+      return saved;
+    }
+  } catch (e) {
+    // localStorage may be unavailable in restricted contexts
+  }
+  return "en";
+}
 
 loadI18n();
 
-async function loadI18n() {
-  const navigatorLang = (navigator.language || "en")
-    .substring(0, 2)
-    .toLowerCase();
+function loadI18n() {
   Vue.use(VueI18n);
 
   const messages = {
@@ -45,14 +56,7 @@ async function loadI18n() {
     de: bundledMessages.de,
   };
 
-  if (!messages[navigatorLang]) {
-    const loaded = await loadLanguage(navigatorLang);
-    if (loaded && loaded.default) {
-      messages[navigatorLang] = loaded.default;
-    }
-  }
-
-  const activeLocale = messages[navigatorLang] ? navigatorLang : "en";
+  const activeLocale = getInitialLocale();
 
   const i18n = new VueI18n({
     locale: activeLocale,

@@ -104,7 +104,7 @@
 
           <NsTextInput
             :label="$t('connectors.host_label')"
-            placeholder="imap.provider.de"
+            placeholder="imap.example.com"
             v-model.trim="form.host"
             :invalidMessage="error.host"
             :disabled="loading.saveConnector"
@@ -124,7 +124,7 @@
         <div class="grid-2col mg-bottom">
           <NsTextInput
             :label="$t('connectors.remote_user_label')"
-            placeholder="info@provider-domain.de"
+            placeholder="info@example.com"
             v-model.trim="form.remote_user"
             :invalidMessage="error.remote_user"
             :disabled="loading.saveConnector"

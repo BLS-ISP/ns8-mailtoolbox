@@ -19,12 +19,40 @@ import {
 } from "@nethserver/ns8-ui-lib";
 import to from "await-to-js";
 
+const COCKPIT_LANG_STORAGE_KEY = "ns8_mail_toolbox_cockpit_lang";
+
 export default {
   name: "App",
   components: { AppSideMenu, AppMobileSideMenu },
   mixins: [QueryParamService, TaskService, UtilService],
   computed: {
     ...mapState(["instanceName", "instanceLabel", "core"]),
+    coreLocale() {
+      return this.core && this.core.$i18n ? this.core.$i18n.locale : null;
+    },
+  },
+  watch: {
+    // Follow runtime language switches triggered by the user in NS8 Cockpit
+    // during the session, without overriding the English default on mount.
+    coreLocale(newLang, oldLang) {
+      if (!oldLang || !newLang || newLang === oldLang) {
+        return;
+      }
+      try {
+        const explicitChoice = window.localStorage.getItem(
+          COCKPIT_LANG_STORAGE_KEY
+        );
+        if (explicitChoice === "en" || explicitChoice === "de") {
+          return;
+        }
+      } catch (e) {
+        // ignore storage access errors
+      }
+      const normalized = String(newLang).substring(0, 2).toLowerCase();
+      if (normalized === "en" || normalized === "de") {
+        this.$i18n.locale = normalized;
+      }
+    },
   },
   created() {
     const core = window.parent.core;

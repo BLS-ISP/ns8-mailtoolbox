@@ -79,7 +79,7 @@
           <div v-else-if="form.scope_type === 'domain'">
             <NsTextInput
               :label="$t('signatures.scope_domain_value_label')"
-              :placeholder="userDomain || 'firma.de'"
+              :placeholder="userDomain || 'example.com'"
               v-model.trim="form.scope_value"
               :invalidMessage="error.scope_value"
               :disabled="loading.saveSignature"
@@ -306,7 +306,17 @@ import { mapState } from "vuex";
 import { TaskService, UtilService } from "@nethserver/ns8-ui-lib";
 import View20 from "@carbon/icons-vue/es/view/20";
 
-const DEFAULT_HTML_SIGNATURE = `<div style="font-family: Arial, sans-serif; font-size: 13px; color: #262626; border-top: 1px solid #d0d0d0; padding-top: 10px; margin-top: 14px;">
+const DEFAULT_HTML_SIGNATURE_EN = `<div style="font-family: Arial, sans-serif; font-size: 13px; color: #262626; border-top: 1px solid #d0d0d0; padding-top: 10px; margin-top: 14px;">
+  <div><strong>{{displayName}}</strong></div>
+  <div>{{title}}</div>
+  <div>{{department}}</div>
+  <div>{{company}}</div>
+  <div>Phone: {{telephoneNumber}}</div>
+  {{#mobile}}<div>Mobile: {{mobile}}</div>{{/mobile}}
+  <div>Email: <a href="mailto:{{mail}}">{{mail}}</a></div>
+</div>`;
+
+const DEFAULT_HTML_SIGNATURE_DE = `<div style="font-family: Arial, sans-serif; font-size: 13px; color: #262626; border-top: 1px solid #d0d0d0; padding-top: 10px; margin-top: 14px;">
   <div><strong>{{displayName}}</strong></div>
   <div>{{title}}</div>
   <div>{{department}}</div>
@@ -348,18 +358,6 @@ export default {
   data() {
     return {
       View20,
-      adPlaceholders: [
-        "{{givenName}}",
-        "{{sn}}",
-        "{{displayName}}",
-        "{{mail}}",
-        "{{telephoneNumber}}",
-        "{{mobile}}",
-        "{{title}}",
-        "{{department}}",
-        "{{company}}",
-        "{{#mobile}}Mobil: {{mobile}}{{/mobile}}",
-      ],
       lastFocusedEditor: "html",
       showSystemGroups: false,
       previewUser: "",
@@ -371,7 +369,7 @@ export default {
         scope_value: "*",
         priority: "10",
         enabled: true,
-        html_template: DEFAULT_HTML_SIGNATURE,
+        html_template: DEFAULT_HTML_SIGNATURE_EN,
         text_template: "",
         auto_plain_from_html: true,
         reply_mode: "append_once",
@@ -393,6 +391,29 @@ export default {
   },
   computed: {
     ...mapState(["instanceName", "core"]),
+    adPlaceholders() {
+      const mobileChip =
+        this.$i18n.locale === "de"
+          ? "{{#mobile}}Mobil: {{mobile}}{{/mobile}}"
+          : "{{#mobile}}Mobile: {{mobile}}{{/mobile}}";
+      return [
+        "{{givenName}}",
+        "{{sn}}",
+        "{{displayName}}",
+        "{{mail}}",
+        "{{telephoneNumber}}",
+        "{{mobile}}",
+        "{{title}}",
+        "{{department}}",
+        "{{company}}",
+        mobileChip,
+      ];
+    },
+    defaultHtmlSignature() {
+      return this.$i18n.locale === "de"
+        ? DEFAULT_HTML_SIGNATURE_DE
+        : DEFAULT_HTML_SIGNATURE_EN;
+    },
     systemGroupsCount() {
       return this.availableGroups.filter(
         (item) => item && typeof item === "object" && item.is_system === true
@@ -485,7 +506,8 @@ export default {
             this.signature.enabled !== undefined
               ? Boolean(this.signature.enabled)
               : true,
-          html_template: this.signature.html_template || DEFAULT_HTML_SIGNATURE,
+          html_template:
+            this.signature.html_template || this.defaultHtmlSignature,
           text_template: this.signature.text_template || "",
           auto_plain_from_html: !hasCustomText,
           reply_mode: this.signature.reply_mode || "append_once",
@@ -499,7 +521,7 @@ export default {
           scope_value: "*",
           priority: "10",
           enabled: true,
-          html_template: DEFAULT_HTML_SIGNATURE,
+          html_template: this.defaultHtmlSignature,
           text_template: "",
           auto_plain_from_html: true,
           reply_mode: "append_once",

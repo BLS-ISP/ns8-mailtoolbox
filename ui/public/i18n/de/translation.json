@@ -11,7 +11,8 @@
     "show_more": "Mehr anzeigen",
     "clear_search": "Suche löschen",
     "no_results": "Keine Treffer",
-    "no_results_description": "Passen Sie den Suchbegriff oder den Statusfilter an"
+    "no_results_description": "Passen Sie den Suchbegriff oder den Statusfilter an",
+    "language": "Sprache"
   },
   "pagination": {
     "items_per_page": "Einträge pro Seite",

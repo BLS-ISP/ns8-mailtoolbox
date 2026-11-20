@@ -187,11 +187,16 @@ def test_extended_settings_and_signature_api_contracts(
         )
         assert r_put3.json()["rspamd_password_set"] is False
 
-        # 5. Seeded disabled signature exists; test CRUD + group precedence + preview
+        # 5. Seeded disabled signature exists (English); test CRUD + group precedence + preview
         r_sigs = client.get("/api/internal/signatures", headers=headers)
         assert r_sigs.status_code == 200
         assert len(r_sigs.json()["signatures"]) == 1
-        assert r_sigs.json()["signatures"][0]["enabled"] is False
+        seeded_sig = r_sigs.json()["signatures"][0]
+        assert seeded_sig["enabled"] is False
+        assert seeded_sig["name"] == "Standard Company Signature"
+        assert "Phone:" in seeded_sig["html_template"]
+        assert "Mobile:" in seeded_sig["html_template"]
+        assert "example.com" in seeded_sig["html_template"]
         assert r_sigs.json()["milter_status"]["listening"] is True
 
         # Create domain signature and higher-precedence group signature (`employees`)

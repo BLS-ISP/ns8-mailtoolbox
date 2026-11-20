@@ -2,11 +2,11 @@ import { ref, computed } from 'vue'
 
 const STORAGE_KEY = 'ns8_mail_toolbox_lang'
 
-function detectInitialLocale() {
+export function detectInitialLocale() {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       const saved = window.localStorage.getItem(STORAGE_KEY)
-      if (saved === 'de' || saved === 'en') {
+      if (saved === 'en' || saved === 'de') {
         return saved
       }
     }
@@ -14,19 +14,8 @@ function detectInitialLocale() {
     // Ignore storage access issues in restricted contexts
   }
 
-  if (typeof navigator !== 'undefined') {
-    const candidates = Array.isArray(navigator.languages) && navigator.languages.length
-      ? navigator.languages
-      : [navigator.language || '']
-    for (const lang of candidates) {
-      const lower = String(lang || '').toLowerCase()
-      if (lower.startsWith('de')) return 'de'
-      if (lower.startsWith('en')) return 'en'
-    }
-  }
-
-  // Default fallback for DACH KMU deployments
-  return 'de'
+  // Default to English unless a language preference was explicitly saved
+  return 'en'
 }
 
 const currentLocale = ref(detectInitialLocale())
@@ -140,6 +129,7 @@ export const messages = {
         forwardDirectTitle: 'Reine Weiterleitung ohne lokale Speicherung',
         sogoForwardReadonly: 'SOGo-Weiterleitung (nur lesen)',
         postfixForwardReadonly: 'Server-Weiterleitung (nur lesen)',
+        forwardActiveShort: 'aktiv',
         noForward: 'Keine Weiterleitung',
         updatedBy: 'Geschaltet von {actor}',
       },
@@ -497,6 +487,7 @@ export const messages = {
         forwardDirectTitle: 'Redirect only – no local copy kept during absence',
         sogoForwardReadonly: 'SOGo forwarding (read-only)',
         postfixForwardReadonly: 'Server forwarding (read-only)',
+        forwardActiveShort: 'active',
         noForward: 'No forwarding',
         updatedBy: 'Set by {actor}',
       },
@@ -553,7 +544,7 @@ export const messages = {
       forwardSectionTitle: 'Forwarding to Deputy',
       forwardToggleLabel: 'Forward incoming emails to a deputy',
       deputyInputLabel: 'Deputy mailbox or email address',
-      deputyInputPlaceholder: 'Search colleague or type email address (e.g. deputy@company.com)…',
+      deputyInputPlaceholder: 'Search colleague or type email address (e.g. deputy@example.com)…',
       colleagueDropdownTitle: 'Directory suggestions',
       colleagueNoMatch: 'No matching mailbox – using manual email address.',
       colleagueAbsentBadge: 'Currently absent',
@@ -698,9 +689,9 @@ export const messages = {
         'Quickly verify inbound and outbound mail delivery status (e.g. "Did customer X send the quote today?") without accessing message contents.',
       filters: {
         senderLabel: 'Sender',
-        senderPlaceholder: 'e.g. customer@company.com',
+        senderPlaceholder: 'e.g. customer@example.com',
         recipientLabel: 'Recipient',
-        recipientPlaceholder: 'e.g. max.muster@our-domain.com',
+        recipientPlaceholder: 'e.g. max.muster@example.com',
         subjectLabel: 'Subject contains',
         subjectPlaceholder: 'e.g. Quote or Invoice',
         dateFromLabel: 'Date from',
@@ -782,7 +773,7 @@ export function useI18n() {
   function t(key, params = {}) {
     const raw =
       getNested(messages[currentLocale.value], key) ??
-      getNested(messages.de, key) ??
+      getNested(messages.en, key) ??
       key
 
     if (typeof raw !== 'string') return String(raw)

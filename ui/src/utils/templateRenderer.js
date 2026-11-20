@@ -16,7 +16,7 @@ export const TEMPLATE_PLACEHOLDERS = [
   },
 ];
 
-export function formatTemplateDate(isoDate, lang = "de") {
+export function formatTemplateDate(isoDate, lang = "en") {
   if (!isoDate || typeof isoDate !== "string") {
     return "";
   }
@@ -39,7 +39,7 @@ export function renderVacationTemplate(
     endDate = "",
     forwardEnabled = false,
     forwardAddress = "",
-    lang = "de",
+    lang = "en",
   } = {}
 ) {
   if (!rawText || typeof rawText !== "string") {

@@ -406,7 +406,7 @@
                   :key="tpl.id"
                   :value="tpl.id"
                 >
-                  {{ tpl.name }} ({{ (tpl.lang || 'de').toUpperCase() }}){{ tpl.is_default ? ' ★' : '' }}
+                  {{ tpl.name }} ({{ (tpl.lang || 'en').toUpperCase() }}){{ tpl.is_default ? ' ★' : '' }}
                 </option>
               </select>
             </div>
@@ -602,7 +602,7 @@ const defaultTemplateForLocale = computed(() => {
   )
 })
 
-const selectedTemplateId = ref(defaultTemplateForLocale.value?.id || 'default_de')
+const selectedTemplateId = ref(defaultTemplateForLocale.value?.id || 'default_en')
 
 watch(defaultTemplateForLocale, (nextDef) => {
   if (nextDef?.id) {

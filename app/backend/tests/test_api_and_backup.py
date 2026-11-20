@@ -43,13 +43,15 @@ def test_full_portal_and_internal_api_contract(
         # Portal endpoints reject unauthenticated requests
         assert client.get("/api/mailboxes").status_code == 401
 
-        # 3. Seeded templates via internal API
+        # 3. Seeded templates via internal API (English default first, German second)
         r_tpl = client.get("/api/internal/templates", headers=internal_headers)
         assert r_tpl.status_code == 200
         tpls = r_tpl.json()["templates"]
-        tpl_ids = [t["id"] for t in tpls]
-        assert "default_de" in tpl_ids
-        assert "default_en" in tpl_ids
+        assert [t["id"] for t in tpls] == ["default_en", "default_de"]
+        assert tpls[0]["name"] == "Default Out-of-Office Notice (EN)"
+        assert tpls[0]["is_default"] is True
+        assert tpls[1]["name"] == "Standard Abwesenheitsnotiz (DE)"
+        assert tpls[1]["is_default"] is False
 
         # 4. Login to Secretariat Portal as `anna`
         r_login = client.post(

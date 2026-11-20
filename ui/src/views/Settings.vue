@@ -453,7 +453,7 @@
             </h4>
             <NsTextInput
               :label="$t('settings.admin_alert_email_label')"
-              placeholder="it-admin@firma.de"
+              placeholder="it-admin@example.com"
               :helperText="$t('settings.admin_alert_email_helper')"
               v-model.trim="admin_alert_email"
               :invalidMessage="error.admin_alert_email"

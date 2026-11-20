@@ -261,16 +261,15 @@ def _send_connector_failure_alert(
     msg = EmailMessage()
     msg["From"] = mail_from
     msg["To"] = alert_to
-    msg["Subject"] = f"[NS8 Mail Toolbox] Externer E-Mail-Abruf fehlgeschlagen: {conn_row['name']}"
+    msg["Subject"] = f"[NS8 Mail Toolbox] External Mail Connector Alert: {conn_row['name']}"
     msg.set_content(
-        "Warnung: Der Abruf eines externen POP3/IMAP-Postfachs ist fehlgeschlagen.\n"
-        "Warning: External POP3/IMAP connector synchronization failed.\n\n"
-        f"Connector:       {conn_row['name']} (#{conn_row['id']})\n"
-        f"Externes Konto:  {conn_row['remote_user']} @ {conn_row['host']}:{conn_row['port']} ({conn_row['protocol']})\n"
-        f"Ziel-Postfach:   {conn_row['target_email']}\n"
-        f"Fehlversuche:    {failure_count}\n"
-        f"Fehlermeldung:   {error_msg}\n\n"
-        "Bitte prüfen Sie im NS8 Cockpit unter Mail Toolbox -> Connectors, ob das externe Passwort geändert wurde.\n",
+        "Warning: External POP3/IMAP mail connector synchronization failed.\n\n"
+        f"Connector:            {conn_row['name']} (#{conn_row['id']})\n"
+        f"Remote Account:       {conn_row['remote_user']} @ {conn_row['host']}:{conn_row['port']} ({conn_row['protocol']})\n"
+        f"Target Mailbox:       {conn_row['target_email']}\n"
+        f"Consecutive Failures: {failure_count}\n"
+        f"Error Message:        {error_msg}\n\n"
+        "Please check NS8 Cockpit -> Mail Toolbox -> Connectors to verify whether the external account password or server settings have changed.\n",
         cte="8bit",
     )
     try:

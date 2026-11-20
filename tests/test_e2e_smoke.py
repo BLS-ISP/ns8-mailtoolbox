@@ -241,6 +241,8 @@ def test_full_end_to_end_secretariat_portal_sogo_and_backup_flow(
             root_html = client.get("/")
             assert root_html.status_code == 200
             assert 'id="app"' in root_html.text
+            assert 'lang="en"' in root_html.text
+            assert "Secretariat Portal" in root_html.text
             spa_fallback = client.get("/dashboard/mailboxes")
             assert spa_fallback.status_code == 200
             assert 'id="app"' in spa_fallback.text
@@ -307,24 +309,28 @@ def test_full_end_to_end_secretariat_portal_sogo_and_backup_flow(
             # Verify Master-User SASL PLAIN login (<user>*vmail) occurred over TCP
             assert ("max.muster", "vmail") in sieve_srv.auth_log
 
-            # 6. Fetch Templates & Render German Default Template
+            # 6. Fetch Templates & Verify English Default (`default_en` first with `is_default=True`, `default_de` retained)
             tpl_res = client.get("/api/templates")
             assert tpl_res.status_code == 200
             templates = tpl_res.json()["templates"]
+            assert templates[0]["id"] == "default_en"
+            en_tpl = next(t for t in templates if t["id"] == "default_en")
             de_tpl = next(t for t in templates if t["id"] == "default_de")
+            assert en_tpl["is_default"] is True
+            assert de_tpl["is_default"] is False
             ctx = {
                 "displayName": "Max Mustermann",
                 "givenName": "Max",
                 "sn": "Mustermann",
                 "mail": "max.muster@firma.de",
-                "startDate": "20.11.2026",
-                "endDate": "27.11.2026",
+                "startDate": "2026-11-20",
+                "endDate": "2026-11-27",
                 "deputyEmail": "anna.sekretariat@firma.de",
             }
-            rendered_subject = _render_portal_template(de_tpl["subject"], ctx)
-            rendered_body = _render_portal_template(de_tpl["body"], ctx)
+            rendered_subject = _render_portal_template(en_tpl["subject"], ctx)
+            rendered_body = _render_portal_template(en_tpl["body"], ctx)
             assert "Max Mustermann" in rendered_subject
-            assert "27.11.2026" in rendered_body
+            assert "2026-11-27" in rendered_body
             assert "anna.sekretariat@firma.de" in rendered_body
 
             # 7. Enable Sick Leave + Copy Forwarding on max.muster (SOGo has filters only -> include "sogo")

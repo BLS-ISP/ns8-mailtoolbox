@@ -201,7 +201,7 @@ def fetch_user_junk_items(
             parsed = email.message_from_bytes(raw_msg, policy=email.policy.default)
             sender_raw = str(parsed.get("From") or "").strip()
             sender_addr = parseaddr(sender_raw)[1].strip() or sender_raw
-            subject = str(parsed.get("Subject") or "(Kein Betreff)").strip()
+            subject = str(parsed.get("Subject") or "(No Subject)").strip()
             msg_id = str(parsed.get("Message-ID") or "").strip() or f"<uid-{user}-{uid}@quarantine>"
             received_at = _parse_received_date(str(parsed.get("Date") or ""))
             spam_score = _extract_spam_score(parsed)
@@ -336,11 +336,12 @@ def _build_digest_email(
         else "https://localhost"
     ).rstrip("/")
 
+    count = len(items_with_tokens)
     plain_lines = [
-        "Täglicher Spam-Quarantäne-Bericht / Daily Spam Quarantine Digest",
-        "================================================================",
+        "Spam Quarantine Digest",
+        "======================",
         "",
-        f"Neue Nachrichten im Spam-Ordner ({len(items_with_tokens)}):",
+        f"You have {count} new quarantined message(s) in your Spam folder:",
         "",
     ]
     html_rows: list[str] = []
@@ -352,37 +353,39 @@ def _build_digest_email(
 
         plain_lines.extend(
             [
-                f"- Von / From: {item['sender']}",
-                f"  Betreff / Subject: {item['subject']}",
-                f"  Empfangen / Received: {item['received_at']} (Score: {score_str})",
-                f"  Zustellen / Release: {rel_url}",
-                f"  Zustellen & Freigeben / Release & Allow: {allow_url}",
+                f"- Received: {item['received_at']} (Score: {score_str})",
+                f"  From: {item['sender']}",
+                f"  Subject: {item['subject']}",
+                f"  Deliver to Inbox: {rel_url}",
+                f"  Deliver & Allow Sender: {allow_url}",
                 "",
             ]
         )
 
         html_rows.append(
             "<tr>"
+            f'<td style="padding:8px;border-bottom:1px solid #e0e0e0;white-space:nowrap;">{html.escape(item["received_at"])}</td>'
             f'<td style="padding:8px;border-bottom:1px solid #e0e0e0;">{html.escape(item["sender"])}</td>'
             f'<td style="padding:8px;border-bottom:1px solid #e0e0e0;"><strong>{html.escape(item["subject"])}</strong></td>'
-            f'<td style="padding:8px;border-bottom:1px solid #e0e0e0;white-space:nowrap;">{html.escape(item["received_at"])}</td>'
+            f'<td style="padding:8px;border-bottom:1px solid #e0e0e0;white-space:nowrap;">{html.escape(score_str)}</td>'
             f'<td style="padding:8px;border-bottom:1px solid #e0e0e0;white-space:nowrap;">'
-            f'<a href="{html.escape(rel_url, quote=True)}" style="color:#0f62fe;text-decoration:none;margin-right:10px;">Zustellen</a>'
-            f'<a href="{html.escape(allow_url, quote=True)}" style="color:#198038;text-decoration:none;">Zustellen &amp; Freigeben</a>'
+            f'<a href="{html.escape(rel_url, quote=True)}" style="color:#0f62fe;text-decoration:none;margin-right:10px;">Deliver to Inbox</a>'
+            f'<a href="{html.escape(allow_url, quote=True)}" style="color:#198038;text-decoration:none;">Deliver &amp; Allow Sender</a>'
             "</td>"
             "</tr>"
         )
 
     html_body = (
         '<!doctype html><html><body style="font-family:Arial,sans-serif;font-size:14px;color:#161616;">'
-        '<h2 style="font-size:18px;margin-bottom:8px;">Spam-Quarantäne-Bericht / Quarantine Digest</h2>'
-        f"<p>Es befinden sich <strong>{len(items_with_tokens)}</strong> neue Nachricht(en) in Ihrem Spam-Ordner:</p>"
-        '<table style="border-collapse:collapse;width:100%;max-width:860px;font-size:13px;">'
+        '<h2 style="font-size:18px;margin-bottom:8px;">Spam Quarantine Digest</h2>'
+        f"<p>You have <strong>{count}</strong> new quarantined message(s) in your Spam folder:</p>"
+        '<table style="border-collapse:collapse;width:100%;max-width:880px;font-size:13px;">'
         "<thead><tr style=\"background:#f4f4f4;text-align:left;\">"
-        '<th style="padding:8px;">Absender</th>'
-        '<th style="padding:8px;">Betreff</th>'
-        '<th style="padding:8px;">Datum</th>'
-        '<th style="padding:8px;">Aktion</th>'
+        '<th style="padding:8px;">Received</th>'
+        '<th style="padding:8px;">From</th>'
+        '<th style="padding:8px;">Subject</th>'
+        '<th style="padding:8px;">Score</th>'
+        '<th style="padding:8px;">Actions</th>'
         "</tr></thead>"
         f"<tbody>{''.join(html_rows)}</tbody>"
         "</table>"
@@ -392,7 +395,7 @@ def _build_digest_email(
     msg = EmailMessage()
     msg["From"] = mail_from
     msg["To"] = recipient_email
-    msg["Subject"] = f"Spam-Quarantäne-Bericht ({len(items_with_tokens)} neue E-Mails)"
+    msg["Subject"] = f"Spam Quarantine Digest ({count} new message(s))"
     msg.set_content("\n".join(plain_lines), cte="8bit")
     msg.add_alternative(html_body, subtype="html", cte="8bit")
     smtp_policy = email.policy.SMTP.clone(max_line_length=998)

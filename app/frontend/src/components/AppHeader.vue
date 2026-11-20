@@ -29,20 +29,20 @@
           <button
             type="button"
             class="lang-btn"
-            :class="{ 'is-active': locale === 'de' }"
-            :aria-pressed="locale === 'de'"
-            @click="setLocale('de')"
-          >
-            DE
-          </button>
-          <button
-            type="button"
-            class="lang-btn"
             :class="{ 'is-active': locale === 'en' }"
             :aria-pressed="locale === 'en'"
             @click="setLocale('en')"
           >
             EN
+          </button>
+          <button
+            type="button"
+            class="lang-btn"
+            :class="{ 'is-active': locale === 'de' }"
+            :aria-pressed="locale === 'de'"
+            @click="setLocale('de')"
+          >
+            DE
           </button>
         </div>
 

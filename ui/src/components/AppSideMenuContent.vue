@@ -67,6 +67,30 @@
         <span>{{ $t("about.title") }}</span>
       </cv-side-nav-link>
     </cv-side-nav-items>
+
+    <div
+      class="side-lang-switcher"
+      role="group"
+      :aria-label="$t('common.language')"
+    >
+      <button
+        type="button"
+        class="lang-btn"
+        :class="{ active: $i18n.locale === 'en' }"
+        @click="switchLanguage('en')"
+      >
+        EN
+      </button>
+      <span class="lang-sep">|</span>
+      <button
+        type="button"
+        class="lang-btn"
+        :class="{ active: $i18n.locale === 'de' }"
+        @click="switchLanguage('de')"
+      >
+        DE
+      </button>
+    </div>
   </div>
 </template>
 
@@ -81,6 +105,8 @@ import Settings20 from "@carbon/icons-vue/es/settings/20";
 import Information20 from "@carbon/icons-vue/es/information/20";
 import { mapState } from "vuex";
 import { QueryParamService, UtilService } from "@nethserver/ns8-ui-lib";
+
+const COCKPIT_LANG_STORAGE_KEY = "ns8_mail_toolbox_cockpit_lang";
 
 export default {
   name: "AppSideMenuContent",
@@ -116,14 +142,67 @@ export default {
     onAppNavigation() {
       this.$forceUpdate();
     },
+    switchLanguage(lang) {
+      if (lang !== "en" && lang !== "de") {
+        return;
+      }
+      this.$i18n.locale = lang;
+      try {
+        window.localStorage.setItem(COCKPIT_LANG_STORAGE_KEY, lang);
+      } catch (e) {
+        // ignore storage errors
+      }
+    },
   },
 };
 </script>
 
 <style scoped lang="scss">
+.app-side-menu-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
 .instance-name span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.side-lang-switcher {
+  margin-top: auto;
+  padding: 0.75rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.lang-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: #c6c6c6;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+
+  &:hover {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  &.active {
+    color: #ffffff;
+    border-color: #78a9ff;
+    background: rgba(15, 98, 254, 0.28);
+  }
+}
+
+.lang-sep {
+  color: #6f6f6f;
+  font-size: 0.75rem;
 }
 </style>

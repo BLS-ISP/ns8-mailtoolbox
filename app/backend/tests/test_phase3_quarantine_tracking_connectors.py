@@ -213,8 +213,11 @@ def test_quarantine_digest_scanner_safe_release_and_allowlist_rescue(
         assert r_dig2.json() == {"users_checked": 3, "digests_sent": 0, "items_included": 0}
         assert len(sent_emails) == 1
 
-        # Extract quarantine_token from sent digest email
+        # Extract quarantine_token from sent English digest email
         raw_text = sent_emails[0]["raw"].decode("utf-8", errors="replace")
+        assert "Spam Quarantine Digest (1 new message(s))" in raw_text
+        assert "Deliver to Inbox" in raw_text
+        assert "Deliver & Allow Sender" in raw_text
         m_tok = re.search(r"quarantine_token=([A-Za-z0-9_\-]+)", raw_text)
         assert m_tok is not None
         token = m_tok.group(1)
@@ -542,7 +545,7 @@ def test_external_imap_and_pop3_connectors_dedup_and_admin_failure_alert(
         assert r_fail1.json()["alert_sent"] is True
         assert len(delivered_smtp) == 2
         assert delivered_smtp[1]["to"] == "admin-alert@firma.de"
-        assert b"Strato Info-Postfach" in delivered_smtp[1]["raw"]
+        assert b"[NS8 Mail Toolbox] External Mail Connector Alert: Strato Info-Postfach" in delivered_smtp[1]["raw"]
 
         # Immediate second failure increments consecutive_failures to 2, but suppresses duplicate alert (24h cooldown)!
         r_fail2 = client.post(

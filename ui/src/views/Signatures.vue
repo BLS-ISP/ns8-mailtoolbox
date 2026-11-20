@@ -380,14 +380,14 @@ export default {
         this.milterTcpPort ||
         "<MILTER_TCP_PORT>";
       const mailId = this.mailModuleId || "mail1";
-      return `runagent -m ${mailId} python3 -c "import agent; agent.set_env('POSTFIX_MILTERS', 'inet:127.0.0.1:${port}, inet:127.0.0.1:11332'); agent.dump_env()" && runagent -m ${mailId} systemctl --user reload postfix`;
+      return `runagent -m ${mailId} python3 -c "import agent; agent.set_env('POSTFIX_MILTERS', 'inet:127.0.0.1:${port}, inet:127.0.0.1:11332')" && runagent -m ${mailId} systemctl --user reload postfix`;
     },
     effectivePostfixResetSnippet() {
       if (this.milterPostfixResetSnippet) {
         return this.milterPostfixResetSnippet;
       }
       const mailId = this.mailModuleId || "mail1";
-      return `runagent -m ${mailId} python3 -c "import agent; agent.unset_env('POSTFIX_MILTERS'); agent.dump_env()" && runagent -m ${mailId} systemctl --user reload postfix`;
+      return `runagent -m ${mailId} python3 -c "import agent; agent.unset_env('POSTFIX_MILTERS')" && runagent -m ${mailId} systemctl --user reload postfix`;
     },
   },
   beforeRouteEnter(to, from, next) {

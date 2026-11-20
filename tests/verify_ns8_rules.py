@@ -845,9 +845,38 @@ def test_ui_and_portal_i18n_translations_and_fallback():
         "ui/src must configure VueI18n `fallbackLocale: 'en'` (NS8 UI Rule 3)"
     )
 
-    # 2. Secretariat & Quarantine Portal (`app/frontend/src/i18n/messages.js`) DE/EN parity
+    # Verify Cockpit `ui/src/main.js` defaults strictly to English ("en") and never uses `navigator.language`
+    ui_main_path = UI_DIR / "src" / "main.js"
+    assert ui_main_path.is_file(), f"Missing {ui_main_path.relative_to(ROOT_DIR)}"
+    ui_main_cleaned = _strip_js_comments(ui_main_path.read_text(encoding="utf-8"))
+    assert "navigator.language" not in ui_main_cleaned and "navigator.languages" not in ui_main_cleaned, (
+        "ui/src/main.js must NOT use `navigator.language` to override the English ('en') default locale!"
+    )
+    assert "ns8_mail_toolbox_cockpit_lang" in ui_main_cleaned, (
+        "ui/src/main.js must read explicit locale override from `ns8_mail_toolbox_cockpit_lang` in localStorage"
+    )
+    assert re.search(r"['\"]en['\"]", ui_main_cleaned), (
+        "ui/src/main.js must initialize default locale to 'en'"
+    )
+
+    # 2. Secretariat & Quarantine Portal (`app/frontend/index.html` & `src/i18n/messages.js`) English default + DE/EN parity
+    portal_index_html = FRONTEND_DIR / "index.html"
+    assert portal_index_html.is_file(), f"Missing {portal_index_html.relative_to(ROOT_DIR)}"
+    portal_index_text = portal_index_html.read_text(encoding="utf-8")
+    assert re.search(r"<html\b[^>]*\blang=['\"]en['\"]", portal_index_text), (
+        "app/frontend/index.html must declare `<html lang=\"en\">`"
+    )
+    assert "Secretariat Portal" in portal_index_text, (
+        "app/frontend/index.html `<title>` must use English title (`Secretariat Portal · NS8 Mail Toolbox`)"
+    )
+
     portal_msg_path = FRONTEND_DIR / "src" / "i18n" / "messages.js"
     assert portal_msg_path.is_file(), f"Missing {portal_msg_path.relative_to(ROOT_DIR)}"
+    portal_msg_cleaned = _strip_js_comments(portal_msg_path.read_text(encoding="utf-8"))
+    assert "navigator.language" not in portal_msg_cleaned and "navigator.languages" not in portal_msg_cleaned, (
+        "app/frontend/src/i18n/messages.js must NOT auto-select German from `navigator.language`!"
+    )
+
     node_bin = shutil.which("node")
     if node_bin and (FRONTEND_DIR / "node_modules").is_dir():
         proc = subprocess.run(
@@ -855,8 +884,11 @@ def test_ui_and_portal_i18n_translations_and_fallback():
                 node_bin,
                 "--input-type=module",
                 "-e",
-                "import { messages } from './src/i18n/messages.js'; "
-                "console.log(JSON.stringify({ de: messages.de, en: messages.en }));",
+                "Object.defineProperty(globalThis, 'navigator', { value: { language: 'de-DE', languages: ['de-DE', 'de'] }, configurable: true }); "
+                "globalThis.window = { localStorage: { getItem: () => null, setItem: () => {} } }; "
+                "const mod = await import('./src/i18n/messages.js'); "
+                "const initial = mod.detectInitialLocale ? mod.detectInitialLocale() : mod.useI18n().locale.value; "
+                "console.log(JSON.stringify({ initial, de: mod.messages.de, en: mod.messages.en }));",
             ],
             cwd=str(FRONTEND_DIR),
             capture_output=True,
@@ -865,6 +897,9 @@ def test_ui_and_portal_i18n_translations_and_fallback():
         )
         assert proc.returncode == 0, f"Failed importing portal messages.js in Node: {proc.stderr}"
         portal_i18n = json.loads(proc.stdout.strip().splitlines()[-1])
+        assert portal_i18n["initial"] == "en", (
+            f"Portal `detectInitialLocale()` must default to `'en'` when localStorage is empty (got {portal_i18n['initial']!r})"
+        )
         p_de = set(_flatten_json_keys(portal_i18n["de"]).keys())
         p_en = set(_flatten_json_keys(portal_i18n["en"]).keys())
         assert p_de == p_en, (

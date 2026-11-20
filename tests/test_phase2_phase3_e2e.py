@@ -484,6 +484,8 @@ def test_phase3a_quarantine_digest_and_scanner_safe_token_release(
         digest_raw_text = sent_mails[0].raw_bytes.decode("utf-8", errors="replace")
         # Extract URL from HTML/text digest (decode quoted-printable soft linebreaks if any)
         unwrapped = re.sub(r"=\r?\n", "", digest_raw_text).replace("=3D", "=")
+        assert "Spam Quarantine Digest" in unwrapped
+        assert "Deliver to Inbox" in unwrapped
         url_match = re.search(
             r"https://vertretung\.firma\.de/\?quarantine_token=([A-Za-z0-9._~-]+)",
             unwrapped,
@@ -893,7 +895,8 @@ def test_phase3c_external_pop3_imap_connectors_dedup_encryption_and_admin_alert(
         alerts = smtp_srv.get_messages()
         assert len(alerts) == 1
         assert alerts[0].rcpt_tos == ["it-notfall@firma.de"]
-        alert_body = alerts[0].raw_bytes.decode("utf-8", errors="replace")
+        alert_body = re.sub(r"=\r?\n", "", alerts[0].raw_bytes.decode("utf-8", errors="replace"))
+        assert "[NS8 Mail Toolbox] External Mail Connector Alert" in alert_body
         assert "kontakt@alt-domain.de" in alert_body
 
         # Immediate second failure increments consecutive_failures to 2 WITHOUT spamming duplicate alert!

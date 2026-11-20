@@ -1,6 +1,6 @@
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/
 
-export function formatDateForLocale(isoDate, lang = 'de') {
+export function formatDateForLocale(isoDate, lang = 'en') {
   if (!isoDate || typeof isoDate !== 'string') return ''
   const trimmed = isoDate.trim()
   const match = ISO_DATE_RE.exec(trimmed)
@@ -12,7 +12,7 @@ export function formatDateForLocale(isoDate, lang = 'de') {
   return `${year}-${month}-${day}`
 }
 
-export function formatDateRange(startDate, endDate, lang = 'de', labels = {}) {
+export function formatDateRange(startDate, endDate, lang = 'en', labels = {}) {
   const start = formatDateForLocale(startDate, lang)
   const end = formatDateForLocale(endDate, lang)
 
@@ -47,7 +47,7 @@ export function buildTemplateContext({
   endDate = '',
   forwardEnabled = false,
   forwardAddress = '',
-  lang = 'de',
+  lang = 'en',
 }) {
   const displayName = mailbox?.display_name || mailbox?.user || ''
   const fallbackNames = splitNameParts(displayName)
@@ -123,7 +123,7 @@ export function renderTemplateString(rawText, context, { isSubject = false } = {
 }
 
 export function renderTemplate(template, params) {
-  const effectiveLang = template?.lang || params.lang || 'de'
+  const effectiveLang = template?.lang || params.lang || 'en'
   const context = buildTemplateContext({ ...params, lang: effectiveLang })
   return {
     subject: renderTemplateString(template?.subject || '', context, {
@@ -138,23 +138,8 @@ export function renderTemplate(template, params) {
 
 export const FALLBACK_TEMPLATES = [
   {
-    id: 'default_de',
-    name: 'Firmen-Standardvorlage (Deutsch)',
-    lang: 'de',
-    is_default: true,
-    subject: 'Abwesenheitsnotiz: {{displayName}}',
-    body:
-      'Guten Tag,\n\n' +
-      'vielen Dank für Ihre Nachricht. Ich bin derzeit{{#startDate}} ab dem {{startDate}}{{/startDate}} außer Haus{{#endDate}} und voraussichtlich ab dem {{endDate}} (Folgetag) wieder erreichbar{{/endDate}}.\n\n' +
-      '{{#deputyEmail}}\n' +
-      'Ihre E-Mail wird während meiner Abwesenheit an {{deputyEmail}} weitergeleitet. In dringenden Fällen wenden Sie sich bitte direkt an {{deputyEmail}}.\n' +
-      '{{/deputyEmail}}\n\n' +
-      'Mit freundlichen Grüßen\n' +
-      '{{displayName}}',
-  },
-  {
     id: 'default_en',
-    name: 'Company Default Template (English)',
+    name: 'Default Out-of-Office Notice (EN)',
     lang: 'en',
     is_default: true,
     subject: 'Out of Office: {{displayName}}',
@@ -165,6 +150,21 @@ export const FALLBACK_TEMPLATES = [
       'Your message is being forwarded to {{deputyEmail}}. For urgent matters, please contact {{deputyEmail}} directly.\n' +
       '{{/deputyEmail}}\n\n' +
       'Best regards,\n' +
+      '{{displayName}}',
+  },
+  {
+    id: 'default_de',
+    name: 'Standard Abwesenheitsnotiz (DE)',
+    lang: 'de',
+    is_default: false,
+    subject: 'Abwesenheitsnotiz: {{displayName}}',
+    body:
+      'Guten Tag,\n\n' +
+      'vielen Dank für Ihre Nachricht. Ich bin derzeit{{#startDate}} ab dem {{startDate}}{{/startDate}} außer Haus{{#endDate}} und voraussichtlich ab dem {{endDate}} (Folgetag) wieder erreichbar{{/endDate}}.\n\n' +
+      '{{#deputyEmail}}\n' +
+      'Ihre E-Mail wird während meiner Abwesenheit an {{deputyEmail}} weitergeleitet. In dringenden Fällen wenden Sie sich bitte direkt an {{deputyEmail}}.\n' +
+      '{{/deputyEmail}}\n\n' +
+      'Mit freundlichen Grüßen\n' +
       '{{displayName}}',
   },
 ]

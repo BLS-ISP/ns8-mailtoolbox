@@ -182,28 +182,10 @@ CREATE TABLE IF NOT EXISTS connector_seen_uids (
 
 DEFAULT_TEMPLATES: list[dict[str, Any]] = [
     {
-        "id": "default_de",
-        "name": "Standard Abwesenheitsnotiz (DE)",
-        "lang": "de",
-        "is_default": True,
-        "subject": "Abwesenheitsnotiz: {{displayName}}",
-        "body": (
-            "Guten Tag,\n\n"
-            "vielen Dank für Ihre Nachricht. Ich bin derzeit nicht im Haus"
-            "{{#endDate}} (voraussichtlich bis einschließlich {{endDate}}){{/endDate}}"
-            " und habe keinen Zugriff auf meine E-Mails.\n\n"
-            "{{#deputyEmail}}In dringenden Fällen wenden Sie sich bitte an meine "
-            "Vertretung unter {{deputyEmail}}.\n\n{{/deputyEmail}}"
-            "Mit freundlichen Grüßen\n"
-            "{{displayName}}"
-        ),
-        "sort_order": 0,
-    },
-    {
         "id": "default_en",
-        "name": "Standard Out-of-Office Reply (EN)",
+        "name": "Default Out-of-Office Notice (EN)",
         "lang": "en",
-        "is_default": False,
+        "is_default": True,
         "subject": "Out of Office: {{displayName}}",
         "body": (
             "Hello,\n\n"
@@ -213,6 +195,24 @@ DEFAULT_TEMPLATES: list[dict[str, Any]] = [
             "{{#deputyEmail}}For urgent matters, please contact "
             "{{deputyEmail}}.\n\n{{/deputyEmail}}"
             "Best regards,\n"
+            "{{displayName}}"
+        ),
+        "sort_order": 0,
+    },
+    {
+        "id": "default_de",
+        "name": "Standard Abwesenheitsnotiz (DE)",
+        "lang": "de",
+        "is_default": False,
+        "subject": "Abwesenheitsnotiz: {{displayName}}",
+        "body": (
+            "Guten Tag,\n\n"
+            "vielen Dank für Ihre Nachricht. Ich bin derzeit nicht im Haus"
+            "{{#endDate}} (voraussichtlich bis einschließlich {{endDate}}){{/endDate}}"
+            " und habe keinen Zugriff auf meine E-Mails.\n\n"
+            "{{#deputyEmail}}In dringenden Fällen wenden Sie sich bitte an meine "
+            "Vertretung unter {{deputyEmail}}.\n\n{{/deputyEmail}}"
+            "Mit freundlichen Grüßen\n"
             "{{displayName}}"
         ),
         "sort_order": 1,
@@ -227,9 +227,9 @@ SEED_SIGNATURE_HTML = (
     "  {{department}}</p>\n"
     "  <p style=\"margin: 6px 0 0 0; color: #525252;\">\n"
     "    {{company}}<br>\n"
-    "    Tel: {{telephoneNumber}}<br>\n"
-    "    Mobil: {{mobile}}<br>\n"
-    '    E-Mail: <a href="mailto:{{mail}}">{{mail}}</a>\n'
+    "    Phone: {{telephoneNumber}}<br>\n"
+    "    Mobile: {{mobile}}<br>\n"
+    '    Email: <a href="mailto:{{mail}}">{{mail}}</a> | Web: <a href="https://example.com">example.com</a>\n'
     "  </p>\n"
     "</div>"
 )
@@ -239,9 +239,9 @@ SEED_SIGNATURE_TEXT = (
     "{{title}}\n"
     "{{department}}\n"
     "{{company}}\n"
-    "Tel: {{telephoneNumber}}\n"
-    "Mobil: {{mobile}}\n"
-    "E-Mail: {{mail}}"
+    "Phone: {{telephoneNumber}}\n"
+    "Mobile: {{mobile}}\n"
+    "Email: {{mail}} | Web: https://example.com"
 )
 
 
@@ -339,7 +339,7 @@ def init_db(db_path: Path | None = None) -> Path:
                         """,
                         (
                             "sig_example_default",
-                            "Standard-Firmensignatur (Beispiel)",
+                            "Standard Company Signature",
                             SEED_SIGNATURE_HTML,
                             SEED_SIGNATURE_TEXT,
                             now,
@@ -354,7 +354,7 @@ def init_db(db_path: Path | None = None) -> Path:
                         ) VALUES (?, 'default', '*', 'sig_example_default', 10, 0, ?, ?, 1, 'append_once', 'below_reply', ?)
                         """,
                         (
-                            "Standard-Firmensignatur (Beispiel)",
+                            "Standard Company Signature",
                             SEED_SIGNATURE_HTML,
                             SEED_SIGNATURE_TEXT,
                             now,

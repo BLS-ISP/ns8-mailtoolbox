@@ -336,7 +336,7 @@
                   >
                     <span class="readonly-tag">SOGo:</span>
                     <span class="readonly-addr">
-                      {{ mb.sogo_status.forward_address || 'aktiv' }}
+                      {{ mb.sogo_status.forward_address || t('dashboard.badges.forwardActiveShort') }}
                     </span>
                   </div>
 
