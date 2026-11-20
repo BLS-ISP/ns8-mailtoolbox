@@ -9,7 +9,7 @@
 set -e
 
 images=()
-repobase="${REPOBASE:-ghcr.io/generablack}"
+repobase="${REPOBASE:-ghcr.io/bls-isp}"
 reponame="mail-toolbox"
 
 cd "$(dirname "$0")"
@@ -80,9 +80,9 @@ buildah config --entrypoint=/ \
     --label="org.nethserver.images=${repobase}/mail-toolbox-app:${IMAGETAG:-latest}" \
     --label="org.opencontainers.image.title=NS8 Mail Toolbox" \
     --label="org.opencontainers.image.description=Delegated sick-leave auto-responder, Before-DKIM company signatures, quarantine digest, Rspamd mail tracking, and POP3/IMAP connectors for NethServer 8" \
-    --label="org.opencontainers.image.vendor=GeneraBlack" \
+    --label="org.opencontainers.image.vendor=BLS-ISP" \
     --label="org.opencontainers.image.licenses=GPL-3.0-or-later" \
-    --label="org.opencontainers.image.source=https://github.com/GeneraBlack/ns8-mailtoolbox" \
+    --label="org.opencontainers.image.source=https://github.com/BLS-ISP/ns8-mailtoolbox" \
     "${container}"
 
 buildah commit "${container}" "${repobase}/${reponame}"

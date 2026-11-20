@@ -65,7 +65,7 @@ def main() -> int:
         restored_image = str(original_env.get("MAIL_TOOLBOX_APP_IMAGE", "")).strip()
         agent.set_env(
             "MAIL_TOOLBOX_APP_IMAGE",
-            restored_image or "ghcr.io/generablack/mail-toolbox-app:latest",
+            restored_image or "ghcr.io/bls-isp/mail-toolbox-app:latest",
         )
 
     # Flush ~/.config/state/environment immediately (NS8 Rule 2)

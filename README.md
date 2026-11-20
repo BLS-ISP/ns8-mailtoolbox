@@ -3,8 +3,8 @@
 **Enterprise Mail Operations Suite for NethServer 8 (`ns8-mail` + `ns8-sogo`)**  
 *Delegated Sick-Leave & Forwarding Portal, Before-DKIM Company Signatures, Daily Spam Quarantine Digest with Self-Service Release, Rspamd Mail-Tracking Search, and External POP3/IMAP Connectors*
 
-[![Test & Audit](https://github.com/GeneraBlack/ns8-mailtoolbox/actions/workflows/test.yml/badge.svg)](https://github.com/GeneraBlack/ns8-mailtoolbox/actions/workflows/test.yml)
-[![Build & Publish OCI Images](https://github.com/GeneraBlack/ns8-mailtoolbox/actions/workflows/build-images.yml/badge.svg)](https://github.com/GeneraBlack/ns8-mailtoolbox/actions/workflows/build-images.yml)
+[![Test & Audit](https://github.com/BLS-ISP/ns8-mailtoolbox/actions/workflows/test.yml/badge.svg)](https://github.com/BLS-ISP/ns8-mailtoolbox/actions/workflows/test.yml)
+[![Build & Publish OCI Images](https://github.com/BLS-ISP/ns8-mailtoolbox/actions/workflows/build-images.yml/badge.svg)](https://github.com/BLS-ISP/ns8-mailtoolbox/actions/workflows/build-images.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](./LICENSE)
 
 ---
@@ -87,13 +87,13 @@ flowchart TB
 Run on your NethServer 8 leader node (replace `1` with the target node ID, ideally the node hosting `ns8-mail`):
 
 ```bash
-add-module ghcr.io/generablack/mail-toolbox:latest 1
+add-module ghcr.io/bls-isp/mail-toolbox:latest 1
 ```
 
 ### Method 2: Install via NS8 Software Center
 Tagged releases publish an NS8 Software Center repository index (`repodata.json` + `metadata.json`):
 1. In NS8 Cockpit, open **Settings -> Software repositories -> Add repository**.
-2. Set **Name** to `Mail Toolbox` and **URL** to `https://generablack.github.io/ns8-mailtoolbox/`.
+2. Set **Name** to `Mail Toolbox` and **URL** to `https://bls-isp.github.io/ns8-mailtoolbox/`.
 3. Open **Software Center**, locate **Mail Toolbox**, and install it onto the target node.
 
 ---
@@ -152,7 +152,7 @@ pip install -r app/backend/requirements.txt pytest httpx jsonschema pyyaml
 pytest app/backend/tests tests -v
 
 # 4. Build NS8 OCI Images (Linux with Podman + Buildah)
-REPOBASE=ghcr.io/generablack IMAGETAG=latest bash build-images.sh
+REPOBASE=ghcr.io/bls-isp IMAGETAG=latest bash build-images.sh
 ```
 
 ---

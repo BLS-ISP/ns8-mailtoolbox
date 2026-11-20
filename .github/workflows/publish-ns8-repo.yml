@@ -44,7 +44,7 @@ jobs:
           import pathlib
           import shutil
 
-          owner = os.environ.get("GH_OWNER", "generablack").lower()
+          owner = os.environ.get("GH_OWNER", "bls-isp").lower()
           ref_name = os.environ.get("REF_NAME", "")
           raw_ver = ref_name.lstrip("v") if ref_name.startswith("v") else (os.environ.get("INPUT_VERSION") or "1.0.0")
 

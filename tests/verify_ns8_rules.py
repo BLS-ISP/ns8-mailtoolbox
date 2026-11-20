@@ -1020,16 +1020,16 @@ def test_release_artifacts_license_and_ns8_repo_workflow():
 
 
 def test_github_release_alignment_and_english_readme():
-    """Verify English-only README.md, GeneraBlack/ns8-mailtoolbox OCI/metadata alignment, .gitignore & CI workflows."""
-    # 1. English-only README.md referencing GeneraBlack/ns8-mailtoolbox & ghcr.io/generablack
+    """Verify English-only README.md, BLS-ISP/ns8-mailtoolbox OCI/metadata alignment, 0 legacy owner refs, .gitignore & CI workflows."""
+    # 1. English-only README.md referencing BLS-ISP/ns8-mailtoolbox & ghcr.io/bls-isp
     readme_path = ROOT_DIR / "README.md"
     assert readme_path.is_file(), "Missing root `README.md`"
     readme_text = readme_path.read_text(encoding="utf-8")
-    assert "GeneraBlack/ns8-mailtoolbox" in readme_text, (
-        "README.md must reference `GeneraBlack/ns8-mailtoolbox`"
+    assert "BLS-ISP/ns8-mailtoolbox" in readme_text, (
+        "README.md must reference `BLS-ISP/ns8-mailtoolbox`"
     )
-    assert "ghcr.io/generablack" in readme_text, (
-        "README.md must reference `ghcr.io/generablack`"
+    assert "ghcr.io/bls-isp" in readme_text, (
+        "README.md must reference `ghcr.io/bls-isp`"
     )
 
     forbidden_german_headings_or_phrases = (
@@ -1053,32 +1053,32 @@ def test_github_release_alignment_and_english_readme():
     assert "org.opencontainers.image.source" in containerfile_text, (
         "app/Containerfile missing `org.opencontainers.image.source` label"
     )
-    assert "https://github.com/GeneraBlack/ns8-mailtoolbox" in containerfile_text, (
-        "app/Containerfile must reference `https://github.com/GeneraBlack/ns8-mailtoolbox`"
+    assert "https://github.com/BLS-ISP/ns8-mailtoolbox" in containerfile_text, (
+        "app/Containerfile must reference `https://github.com/BLS-ISP/ns8-mailtoolbox`"
     )
 
     build_sh_text = BUILD_IMAGES_SH.read_text(encoding="utf-8")
-    assert "ghcr.io/generablack" in build_sh_text, (
-        "build-images.sh default repobase must be `ghcr.io/generablack`"
+    assert "ghcr.io/bls-isp" in build_sh_text, (
+        "build-images.sh default repobase must be `ghcr.io/bls-isp`"
     )
-    assert "https://github.com/GeneraBlack/ns8-mailtoolbox" in build_sh_text, (
-        "build-images.sh must set `org.opencontainers.image.source=https://github.com/GeneraBlack/ns8-mailtoolbox`"
+    assert "https://github.com/BLS-ISP/ns8-mailtoolbox" in build_sh_text, (
+        "build-images.sh must set `org.opencontainers.image.source=https://github.com/BLS-ISP/ns8-mailtoolbox`"
     )
 
     metadata_path = UI_DIR / "public" / "metadata.json"
     assert metadata_path.is_file(), "Missing `ui/public/metadata.json`"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert metadata.get("source") == "ghcr.io/generablack/mail-toolbox", (
+    assert metadata.get("source") == "ghcr.io/bls-isp/mail-toolbox", (
         f"ui/public/metadata.json `source` mismatch: {metadata.get('source')!r}"
     )
     docs = metadata.get("docs", {})
-    assert docs.get("code_url") == "https://github.com/GeneraBlack/ns8-mailtoolbox", (
+    assert docs.get("code_url") == "https://github.com/BLS-ISP/ns8-mailtoolbox", (
         f"ui/public/metadata.json `docs.code_url` mismatch: {docs.get('code_url')!r}"
     )
-    assert docs.get("bug_url") == "https://github.com/GeneraBlack/ns8-mailtoolbox/issues", (
+    assert docs.get("bug_url") == "https://github.com/BLS-ISP/ns8-mailtoolbox/issues", (
         f"ui/public/metadata.json `docs.bug_url` mismatch: {docs.get('bug_url')!r}"
     )
-    assert docs.get("documentation_url") == "https://github.com/GeneraBlack/ns8-mailtoolbox#readme", (
+    assert docs.get("documentation_url") == "https://github.com/BLS-ISP/ns8-mailtoolbox#readme", (
         f"ui/public/metadata.json `docs.documentation_url` mismatch: {docs.get('documentation_url')!r}"
     )
 
@@ -1088,11 +1088,25 @@ def test_github_release_alignment_and_english_readme():
         "actions/clone-module/50configure",
     ):
         stext = (IMAGEROOT_DIR / rel_script).read_text(encoding="utf-8")
-        assert "ghcr.io/generablack/mail-toolbox-app" in stext, (
-            f"imageroot/{rel_script} fallback image must reference `ghcr.io/generablack/mail-toolbox-app`"
+        assert "ghcr.io/bls-isp/mail-toolbox-app" in stext, (
+            f"imageroot/{rel_script} fallback image must reference `ghcr.io/bls-isp/mail-toolbox-app`"
         )
 
-    # 3. Verify .gitignore does not ignore ui/.env
+    # 3. Assert ZERO remaining case-insensitive occurrences of the legacy personal namespace across all repo files
+    legacy_owner = "genera" + "black"
+    legacy_hits: list[str] = []
+    for file_path in _iter_files(ROOT_DIR):
+        if file_path.suffix.lower() in BINARY_EXTENSIONS:
+            continue
+        text = file_path.read_text(encoding="utf-8", errors="ignore")
+        if legacy_owner in text.lower():
+            legacy_hits.append(str(file_path.relative_to(ROOT_DIR)))
+
+    assert not legacy_hits, (
+        f"Found unmigrated legacy owner references in repository files: {legacy_hits}"
+    )
+
+    # 4. Verify .gitignore does not ignore ui/.env
     gitignore_lines = [
         ln.strip()
         for ln in (ROOT_DIR / ".gitignore").read_text(encoding="utf-8").splitlines()
@@ -1103,7 +1117,7 @@ def test_github_release_alignment_and_english_readme():
             "`.gitignore` has bare `.env` without `!ui/.env`, which would ignore `ui/.env`!"
         )
 
-    # 4. Validate all .github/workflows/*.yml files
+    # 5. Validate all .github/workflows/*.yml files
     wf_dir = ROOT_DIR / ".github" / "workflows"
     wf_files = sorted(wf_dir.glob("*.yml"))
     assert len(wf_files) >= 3, f"Expected >=3 workflow files in .github/workflows, got {wf_files}"
