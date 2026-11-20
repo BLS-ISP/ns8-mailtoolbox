@@ -47,12 +47,13 @@ jobs:
           npm run build
           test -f dist/index.html
 
-      - name: Configure Ubuntu runner for rootless Buildah
+      - name: Configure Ubuntu runner for Buildah
         run: |
           if ! command -v buildah >/dev/null 2>&1; then
             sudo apt-get update && sudo apt-get install -y buildah
           fi
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo aa-teardown || sudo systemctl stop apparmor || true
 
       - name: Determine image metadata
         id: meta
@@ -73,14 +74,23 @@ jobs:
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | buildah login -u "${{ github.actor }}" --password-stdin "${REGISTRY}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | sudo buildah login --authfile /tmp/containers-auth.json -u "${{ github.actor }}" --password-stdin "${REGISTRY}"
 
       - name: Build and push OCI images via Buildah
-        env:
-          CI: "true"
-          SKIP_UI_BUILD: "1"
-          REPOBASE: ${{ steps.meta.outputs.repobase }}
-          IMAGETAG: ${{ steps.meta.outputs.imagetag }}
-          IMAGETAGS: ${{ steps.meta.outputs.imagetags }}
-          PUBLISH_IMAGES: ${{ github.event_name != 'pull_request' && '1' || '0' }}
-        run: bash build-images.sh
+        run: |
+          set -o pipefail
+          if ! sudo env \
+            CI="true" \
+            SKIP_UI_BUILD="1" \
+            BUILDAH_ISOLATION="chroot" \
+            REGISTRY_AUTH_FILE="/tmp/containers-auth.json" \
+            REPOBASE="${{ steps.meta.outputs.repobase }}" \
+            IMAGETAG="${{ steps.meta.outputs.imagetag }}" \
+            IMAGETAGS="${{ steps.meta.outputs.imagetags }}" \
+            PUBLISH_IMAGES="${{ github.event_name != 'pull_request' && '1' || '0' }}" \
+            GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
+            bash build-images.sh 2>&1 | tee /tmp/buildah.log; then
+            echo "::error title=Buildah Failure::$(tail -n 30 /tmp/buildah.log | tr '\n' ' ')"
+            exit 1
+          fi
+          sudo chown "${USER}:${USER}" "${GITHUB_OUTPUT}" || true

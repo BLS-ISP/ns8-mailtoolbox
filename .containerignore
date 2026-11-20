@@ -1,0 +1,16 @@
+# Exclude heavy local/VCS/node_modules directories from Buildah context
+.git
+.github
+ui/node_modules
+app/frontend/node_modules
+**/__pycache__
+**/*.pyc
+.pytest_cache
+ns8-repo
+tests
+
+# Explicitly include prebuilt UI bundles required by Containerfile / build-images.sh
+!app/frontend/dist
+!app/frontend/dist/**
+!ui/dist
+!ui/dist/**

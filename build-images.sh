@@ -98,10 +98,11 @@ printf "\n"
 
 if [[ -n "${CI:-}" ]]; then
     read -r -a tags_to_apply <<< "${IMAGETAGS:-${IMAGETAG:-latest}}"
-    # Deduplicate tags while preserving order
     unique_tags=()
     for candidate_tag in "${tags_to_apply[@]}"; do
-        [[ -z "${candidate_tag}" ]] && continue
+        if [[ -z "${candidate_tag}" ]]; then
+            continue
+        fi
         already_seen=0
         for existing_tag in "${unique_tags[@]}"; do
             if [[ "${existing_tag}" == "${candidate_tag}" ]]; then
@@ -114,6 +115,11 @@ if [[ -n "${CI:-}" ]]; then
         fi
     done
 
+    auth_args=()
+    if [[ -n "${REGISTRY_AUTH_FILE:-}" ]]; then
+        auth_args=(--authfile "${REGISTRY_AUTH_FILE}")
+    fi
+
     images_output=()
     for image in "${images[@],,}"; do
         for tag in "${unique_tags[@]}"; do
@@ -122,7 +128,7 @@ if [[ -n "${CI:-}" ]]; then
             fi
             images_output+=("${image}:${tag}")
             if [[ "${PUBLISH_IMAGES:-0}" == "1" ]]; then
-                buildah push "${image}:${tag}" "docker://${image}:${tag}"
+                buildah push "${auth_args[@]}" "${image}:${tag}" "docker://${image}:${tag}"
             fi
         done
     done
