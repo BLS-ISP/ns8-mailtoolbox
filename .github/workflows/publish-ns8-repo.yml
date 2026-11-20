@@ -1,0 +1,121 @@
+name: Publish NS8 Software Center Repository
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag (e.g. 1.0.0)"
+        required: false
+        default: "1.0.0"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "ns8-software-repo-pages"
+  cancel-in-progress: false
+
+jobs:
+  build-ns8-repo:
+    name: Generate NS8 Software Center repodata.json & metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build NS8 Software Center repository tree
+        env:
+          GH_OWNER: ${{ github.repository_owner }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import shutil
+
+          owner = os.environ.get("GH_OWNER", "generablack").lower()
+          ref_name = os.environ.get("REF_NAME", "")
+          raw_ver = ref_name.lstrip("v") if ref_name.startswith("v") else (os.environ.get("INPUT_VERSION") or "1.0.0")
+
+          out_dir = pathlib.Path("ns8-repo")
+          pkg_dir = out_dir / "mail-toolbox"
+          pkg_dir.mkdir(parents=True, exist_ok=True)
+
+          meta_src = pathlib.Path("ui/public/metadata.json")
+          metadata = json.loads(meta_src.read_text(encoding="utf-8"))
+          metadata["source"] = f"ghcr.io/{owner}/mail-toolbox"
+
+          (pkg_dir / "metadata.json").write_text(
+              json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8",
+          )
+
+          logo_src = pathlib.Path("ui/src/assets/module_default_logo.png")
+          if logo_src.is_file():
+              shutil.copy2(logo_src, pkg_dir / "logo.png")
+
+          package_entry = {
+              "id": "mail-toolbox",
+              "name": metadata.get("name", "Mail Toolbox"),
+              "description": metadata.get("description", {}),
+              "categories": metadata.get("categories", ["collaboration"]),
+              "authors": metadata.get("authors", []),
+              "docs": metadata.get("docs", {}),
+              "source": metadata["source"],
+              "logo": "mail-toolbox/logo.png",
+              "screenshots": [],
+              "versions": [
+                  {
+                      "tag": raw_ver,
+                      "testing": "-" in raw_ver,
+                      "labels": {
+                          "org.nethserver.authorizations": "traefik@node:routeadm mail@any:mailadm cluster:accountconsumer",
+                          "org.nethserver.tcp-ports-demand": "2",
+                          "org.nethserver.rootfull": "0",
+                          "org.nethserver.min-core": "3.20.1",
+                          "org.nethserver.images": f"ghcr.io/{owner}/mail-toolbox-app:{raw_ver}",
+                      },
+                  }
+              ],
+          }
+
+          (out_dir / "repodata.json").write_text(
+              json.dumps([package_entry], indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload NS8 repository artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ns8-software-repository
+          path: ns8-repo/
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ns8-repo/
+
+  deploy-pages:
+    name: Publish to GitHub Pages (NS8 Software Repository)
+    needs: build-ns8-repo
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy NS8 repository to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

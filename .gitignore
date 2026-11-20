@@ -1,0 +1,44 @@
+# Python bytecode & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+ENV/
+
+# Node / Frontend dependencies & build artifacts
+ui/node_modules/
+ui/dist/
+app/frontend/node_modules/
+app/frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Generated NS8 Software Center repo output
+ns8-repo/
+
+# Runtime state, databases & local secrets
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+discovery_mail.env
+discovery_ldap.env
+master.creds
+internal.token
+mailboxes_cache.json
+toolbox_settings.json
+/.env
+.env.local
+!ui/.env
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

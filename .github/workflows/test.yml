@@ -1,0 +1,104 @@
+name: Test & Audit NS8 Mail Toolbox
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+jobs:
+  backend-and-ns8-audit:
+    name: Backend Pytest & NS8 Architecture Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: app/backend/requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/backend/requirements.txt pytest httpx jsonschema pyyaml
+
+      - name: Compile NS8 imageroot Python scripts & validate JSON schemas
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+          import py_compile
+
+          root = pathlib.Path(".")
+          for path in list(root.glob("imageroot/bin/*")) + list(root.glob("imageroot/actions/*/[0-9]*")) + list(root.glob("imageroot/events/*/[0-9]*")) + list(root.glob("imageroot/update-module.d/*")):
+              if path.is_file():
+                  first_line = path.read_text(encoding="utf-8").splitlines()[0]
+                  if "python" in first_line:
+                      py_compile.compile(str(path), doraise=True)
+
+          for schema_path in root.glob("imageroot/actions/*/validate-*.json"):
+              json.loads(schema_path.read_text(encoding="utf-8"))
+          PY
+
+      - name: Set up Node.js 20 for E2E Portal Bundle
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: app/frontend/package-lock.json
+
+      - name: Build Secretariat Web Portal for E2E Smoke Test
+        run: |
+          npm --prefix app/frontend ci
+          npm --prefix app/frontend run build
+
+      - name: Run Backend & NS8 Verification Test Suites
+        run: pytest app/backend/tests tests -v
+
+  portal-frontend-build:
+    name: Secretariat Web Portal Build (Vue 3 + Vite)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: app/frontend/package-lock.json
+
+      - name: Install & build Secretariat Web Portal
+        working-directory: app/frontend
+        run: |
+          npm ci
+          npm run build
+          test -f dist/index.html
+
+  cockpit-ui-build:
+    name: NS8 Cockpit UI Lint & Build (Vue 2 + Carbon)
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --openssl-legacy-provider
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install, lint & build NS8 Cockpit UI
+        working-directory: ui
+        run: |
+          npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+          npm run lint
+          npm run build
+          test -f dist/index.html

@@ -1,0 +1,42 @@
+# Enforce LF line endings across all source, container, and NS8 imageroot scripts
+* text=auto eol=lf
+
+imageroot/** text eol=lf
+app/** text eol=lf
+ui/** text eol=lf
+tests/** text eol=lf
+.github/** text eol=lf
+
+*.sh text eol=lf
+*.py text eol=lf
+*.sieve text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.vue text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.ts text eol=lf
+*.css text eol=lf
+*.scss text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+*.conf text eol=lf
+*.service text eol=lf
+*.timer text eol=lf
+*.env text eol=lf
+*Containerfile* text eol=lf
+*Dockerfile* text eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.sqlite binary
