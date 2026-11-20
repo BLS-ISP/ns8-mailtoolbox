@@ -48,22 +48,20 @@ def _build_milter_postfix_snippet(
     target_host = milter_bind_host or "127.0.0.1"
     target_port = milter_tcp_port or 20011
     env_fn = "set" + "_env"
-    dump_fn = "dump" + "_env"
     return (
         f'runagent -m {target_mail} python3 -c "'
-        f"import agent; agent.{env_fn}('POSTFIX_MILTERS', 'inet:{target_host}:{target_port}, inet:127.0.0.1:11332'); "
-        f'agent.{dump_fn}()" && runagent -m {target_mail} systemctl --user reload postfix'
+        f"import agent; agent.{env_fn}('POSTFIX_MILTERS', 'inet:{target_host}:{target_port}, inet:127.0.0.1:11332')"
+        f'" && runagent -m {target_mail} systemctl --user reload postfix'
     )
 
 
 def _build_milter_postfix_reset_snippet(mail_module_id: str) -> str:
     target_mail = mail_module_id or "mail1"
     unset_fn = "unset" + "_env"
-    dump_fn = "dump" + "_env"
     return (
         f'runagent -m {target_mail} python3 -c "'
-        f"import agent; agent.{unset_fn}('POSTFIX_MILTERS'); "
-        f'agent.{dump_fn}()" && runagent -m {target_mail} systemctl --user reload postfix'
+        f"import agent; agent.{unset_fn}('POSTFIX_MILTERS')"
+        f'" && runagent -m {target_mail} systemctl --user reload postfix'
     )
 
 

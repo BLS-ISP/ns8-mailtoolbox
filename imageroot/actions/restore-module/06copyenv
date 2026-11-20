@@ -71,8 +71,6 @@ def main() -> int:
             restored_image or "ghcr.io/bls-isp/mail-toolbox-app:latest",
         )
 
-    # Flush ~/.config/state/environment immediately (NS8 Rule 2)
-    agent.dump_env()
     return 0
 
 

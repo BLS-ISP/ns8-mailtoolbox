@@ -16,7 +16,8 @@ WORKDIR /
 COPY app/backend/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
     rm -f /tmp/requirements.txt && \
-    mkdir -p /app/backend /app/static /app/data /app/config
+    mkdir -p /app/backend /app/static /app/data /app/config && \
+    touch /app/__init__.py
 
 COPY app/backend /app/backend
 

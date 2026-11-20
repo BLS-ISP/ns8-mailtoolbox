@@ -67,8 +67,6 @@ def main() -> int:
     if not os.environ.get("MAIL_TOOLBOX_APP_IMAGE", "").strip():
         agent.set_env("MAIL_TOOLBOX_APP_IMAGE", "ghcr.io/bls-isp/mail-toolbox-app:latest")
 
-    # Flush ~/.config/state/environment immediately (NS8 Rule 2)
-    agent.dump_env()
     return 0
 
 

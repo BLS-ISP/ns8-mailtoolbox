@@ -100,7 +100,6 @@ def main() -> int:
     agent.set_env("MILTER_BIND_HOST", milter_bind_host)
     if not os.environ.get("MAIL_TOOLBOX_APP_IMAGE", "").strip():
         agent.set_env("MAIL_TOOLBOX_APP_IMAGE", "ghcr.io/bls-isp/mail-toolbox-app:latest")
-    agent.dump_env()
 
     token_path = config_dir / "internal.token"
     if not token_path.is_file() or not token_path.read_text(encoding="utf-8").strip():

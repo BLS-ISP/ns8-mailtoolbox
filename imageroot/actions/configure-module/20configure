@@ -248,9 +248,6 @@ def main() -> int:
     agent.set_env("TIMEZONE", timezone_name)
     agent.set_env("ADMIN_ALERT_EMAIL", admin_alert_email)
 
-    # Flush ~/.config/state/environment BEFORE configuring routes / starting services (NS8 Rule 2)
-    agent.dump_env()
-
     # Persist ./config/toolbox_settings.json atomically (0600)
     settings_payload = {
         "portal_tracking_enabled": portal_tracking_enabled,

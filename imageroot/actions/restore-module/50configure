@@ -82,10 +82,8 @@ def main() -> int:
         agent.set_env("MAIL_MODULE_ID", mail_module_id)
         agent.set_env("USER_DOMAIN", user_domain)
         agent.set_env("MILTER_BIND_HOST", milter_bind_host)
-        agent.dump_env()
     else:
         agent.set_env("MILTER_BIND_HOST", milter_bind_host)
-        agent.dump_env()
 
     if user_domain:
         agent.bind_user_domains([user_domain])

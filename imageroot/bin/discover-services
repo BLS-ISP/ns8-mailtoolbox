@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
-"""Discover coupled ns8-mail TCP endpoints, LDAP proxy settings, and Dovecot master credentials."""
+"""Discover coupled ns8-mail TCP endpoints, Podman network mode, LDAP proxy settings, and Dovecot master credentials."""
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,13 @@ def _parse_task_output(result: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _detect_podman_network_override() -> str:
+    """Detect Podman 5 nodes where `pasta` replaces `slirp4netns`."""
+    if not shutil.which("slirp4netns") and shutil.which("pasta"):
+        return "pasta:--map-gw"
+    return ""
+
+
 def main() -> int:
     state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
     config_dir = state_dir / "config"
@@ -86,12 +94,20 @@ def main() -> int:
             if not fpath.exists():
                 _atomic_write_text(fpath, "", 0o600)
 
+    network_override = _detect_podman_network_override()
+
     env = _load_env_fallback(state_dir)
     mail_module_uuid = env.get("MAIL_MODULE_UUID", "").strip()
     mail_module_id = env.get("MAIL_MODULE_ID", "").strip()
     user_domain = env.get("USER_DOMAIN", "").strip()
 
     if not mail_module_uuid and not user_domain:
+        if network_override:
+            _atomic_write_text(
+                state_dir / "discovery_mail.env",
+                f"PODMAN_NETWORK_MODE={network_override}\n",
+                0o600,
+            )
         return 0
 
     rdb = agent.redis_connect(use_replica=True)
@@ -135,17 +151,27 @@ def main() -> int:
             sieve_providers[0].get("port", 4190) if sieve_providers else 4190
         )
 
+        mail_env_lines: list[str] = []
         if mail_host:
-            mail_env_lines = [
-                f"MAIL_HOST={_sanitize_env_val(mail_host)}",
-                f"MAIL_IMAP_PORT={_sanitize_env_val(mail_imap_port)}",
-                f"MAIL_SIEVE_PORT={_sanitize_env_val(mail_sieve_port)}",
-                f"MAIL_SUBMISSION_PORT={_sanitize_env_val(mail_submission_port)}",
-                f"MAIL_MODULE_ID={_sanitize_env_val(mail_module_id)}",
-            ]
-            mail_env_text = "\n".join(mail_env_lines) + "\n"
-            _atomic_write_text(state_dir / "discovery_mail.env", mail_env_text, 0o600)
-            _atomic_write_text(config_dir / "discovery_mail.env", mail_env_text, 0o600)
+            mail_env_lines.extend(
+                [
+                    f"MAIL_HOST={_sanitize_env_val(mail_host)}",
+                    f"MAIL_IMAP_PORT={_sanitize_env_val(mail_imap_port)}",
+                    f"MAIL_SIEVE_PORT={_sanitize_env_val(mail_sieve_port)}",
+                    f"MAIL_SUBMISSION_PORT={_sanitize_env_val(mail_submission_port)}",
+                    f"MAIL_MODULE_ID={_sanitize_env_val(mail_module_id)}",
+                ]
+            )
+        if mail_env_lines:
+            config_mail_text = "\n".join(mail_env_lines) + "\n"
+            _atomic_write_text(config_dir / "discovery_mail.env", config_mail_text, 0o600)
+
+        state_mail_lines = list(mail_env_lines)
+        if network_override:
+            state_mail_lines.append(f"PODMAN_NETWORK_MODE={network_override}")
+        if state_mail_lines:
+            state_mail_text = "\n".join(state_mail_lines) + "\n"
+            _atomic_write_text(state_dir / "discovery_mail.env", state_mail_text, 0o600)
 
     # 2. Discover local node LDAP proxy configuration for USER_DOMAIN
     if user_domain:

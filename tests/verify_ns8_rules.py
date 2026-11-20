@@ -213,17 +213,24 @@ def test_no_custom_get_status_action():
     )
 
 
-def test_action_scripts_using_set_env_call_dump_env():
-    """NS8 Rule 2: Every script using `agent.set_env` MUST call `agent.dump_env()`."""
+def test_action_scripts_set_env_and_no_deprecated_dump_env():
+    """NS8 Rule 2 (NS8 3.20+): Scripts persist env via `agent.set_env` and MUST NOT call deprecated `agent.dump_env()`."""
     assert ACTIONS_DIR.is_dir(), f"Missing actions directory: {ACTIONS_DIR}"
 
     scripts_with_set_env: list[Path] = []
-    violations: list[str] = []
+    dump_env_violations: list[str] = []
 
     for file_path in _iter_files(IMAGEROOT_DIR):
         if file_path.suffix == ".json":
             continue
         text = file_path.read_text(encoding="utf-8", errors="replace")
+        rel = file_path.relative_to(ROOT_DIR)
+
+        if re.search(r"\bdump_env\b", text):
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if re.search(r"\bdump_env\b", line):
+                    dump_env_violations.append(f"{rel}:{lineno}: {line.strip()}")
+
         if "set_env" not in text:
             continue
 
@@ -231,39 +238,19 @@ def test_action_scripts_using_set_env_call_dump_env():
         is_python = file_path.suffix == ".py" or "python" in first_line
         if is_python:
             tree = ast.parse(text, filename=str(file_path))
-            set_env_lines: list[int] = []
-            dump_env_lines: list[int] = []
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call):
-                    func = node.func
-                    attr_name = (
-                        func.attr
-                        if isinstance(func, ast.Attribute)
-                        else (func.id if isinstance(func, ast.Name) else None)
-                    )
-                    if attr_name == "set_env":
-                        set_env_lines.append(node.lineno)
-                    elif attr_name == "dump_env":
-                        dump_env_lines.append(node.lineno)
-
+            set_env_lines = [
+                node.lineno
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and (
+                    (isinstance(node.func, ast.Attribute) and node.func.attr == "set_env")
+                    or (isinstance(node.func, ast.Name) and node.func.id == "set_env")
+                )
+            ]
             if set_env_lines:
                 scripts_with_set_env.append(file_path)
-                rel = file_path.relative_to(ROOT_DIR)
-                if not dump_env_lines:
-                    violations.append(
-                        f"{rel}:{set_env_lines[0]} calls `set_env()` without calling `agent.dump_env()`"
-                    )
-                elif max(dump_env_lines) < max(set_env_lines):
-                    violations.append(
-                        f"{rel}:{max(set_env_lines)} calls `set_env()` after last `dump_env()` at line {max(dump_env_lines)}"
-                    )
-        else:
-            if re.search(r"\bset_env\b", text):
-                scripts_with_set_env.append(file_path)
-                if not re.search(r"\bdump_env\b", text):
-                    violations.append(
-                        f"{file_path.relative_to(ROOT_DIR)} uses set_env without dump_env"
-                    )
+        elif re.search(r"\bset_env\b", text):
+            scripts_with_set_env.append(file_path)
 
     assert scripts_with_set_env, (
         "Expected `create-module`, `configure-module`, and `restore-module` scripts to use `agent.set_env`."
@@ -273,10 +260,13 @@ def test_action_scripts_using_set_env_call_dump_env():
     }
     for required_action in ("create-module", "configure-module", "restore-module"):
         assert required_action in action_dirs_with_set_env, (
-            f"Expected `imageroot/actions/{required_action}` to persist env with `agent.set_env` + `agent.dump_env()`."
+            f"Expected `imageroot/actions/{required_action}` to persist env with `agent.set_env`."
         )
 
-    assert not violations, "NS8 dump_env() violations:\n  - " + "\n  - ".join(violations)
+    assert not dump_env_violations, (
+        "Deprecated `agent.dump_env()` must NOT be called in NS8 3.20+ imageroot scripts:\n  - "
+        + "\n  - ".join(dump_env_violations)
+    )
 
 
 def test_hostname_validation_and_tcp_ports_initialization():
@@ -309,7 +299,7 @@ def test_hostname_validation_and_tcp_ports_initialization():
 
 
 def test_systemd_units_pull_missing_and_localhost_binding():
-    """NS8 Rules 3 & 5 + `%E/state` & rootless host-loopback: No `%S/state`, no `--pull=always`, safe port bindings."""
+    """NS8 Rules 3 & 5 + v1.0.2 systemd supervision: No `%S/state`, no `--pull=always`, no `--restart=`, `wait-healthy`, safe bindings."""
     assert SYSTEMD_USER_DIR.is_dir(), f"Missing {SYSTEMD_USER_DIR.relative_to(ROOT_DIR)}"
     service_files = sorted(SYSTEMD_USER_DIR.glob("*.service"))
     assert service_files, f"No systemd .service files found in {SYSTEMD_USER_DIR.relative_to(ROOT_DIR)}"
@@ -317,9 +307,58 @@ def test_systemd_units_pull_missing_and_localhost_binding():
     main_service = SYSTEMD_USER_DIR / "mail-toolbox.service"
     sync_service = SYSTEMD_USER_DIR / "mail-toolbox-sync.service"
     sync_timer = SYSTEMD_USER_DIR / "mail-toolbox-sync.timer"
+    wait_healthy = IMAGEROOT_DIR / "bin" / "wait-healthy"
     assert main_service.is_file(), "Missing imageroot/systemd/user/mail-toolbox.service"
     assert sync_service.is_file(), "Missing imageroot/systemd/user/mail-toolbox-sync.service"
     assert sync_timer.is_file(), "Missing imageroot/systemd/user/mail-toolbox-sync.timer"
+    assert wait_healthy.is_file(), "Missing imageroot/bin/wait-healthy"
+
+    wait_text = wait_healthy.read_text(encoding="utf-8")
+    wait_first_line = wait_text.splitlines()[0] if wait_text.splitlines() else ""
+    assert wait_first_line.startswith("#!") and "python" in wait_first_line, (
+        f"imageroot/bin/wait-healthy must start with a Python `#!` shebang, got {wait_first_line!r}"
+    )
+    compile(wait_text, str(wait_healthy.relative_to(ROOT_DIR)), "exec")
+
+    # Functional smoke check: `imageroot/bin/wait-healthy` exits 0 immediately when `/api/health` returns 200
+    import http.server
+    import os
+    import threading
+
+    class _HealthHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/api/health":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status":"ok"}')
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            return
+
+    health_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _HealthHandler)
+    health_thread = threading.Thread(target=health_srv.serve_forever, daemon=True)
+    health_thread.start()
+    try:
+        env = dict(os.environ)
+        env["WEB_TCP_PORT"] = str(health_srv.server_address[1])
+        proc = subprocess.run(
+            [sys.executable, str(wait_healthy)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert proc.returncode == 0, (
+            f"imageroot/bin/wait-healthy failed against healthy /api/health endpoint: "
+            f"rc={proc.returncode}, stderr={proc.stderr!r}"
+        )
+    finally:
+        health_srv.shutdown()
+        health_srv.server_close()
 
     podman_run_services = 0
     for svc in service_files:
@@ -336,22 +375,52 @@ def test_systemd_units_pull_missing_and_localhost_binding():
         assert not re.search(r"--pull(?:=|\s+)always\b", content), (
             f"{rel}: Forbidden `--pull=always` in systemd unit! Must use `--pull=missing`."
         )
+        assert not re.search(r"'[^']*\\\"[^']*'", content), (
+            f"{rel}: Forbidden inline `\\\"` inside single quotes in `.service` file! "
+            "systemd unescapes `\\\"` before invoking bash, breaking inner quotes."
+        )
 
         if "podman run" in content:
             podman_run_services += 1
             assert re.search(r"--pull(?:=|\s+)missing\b", content), (
                 f"{rel}: `podman run` must specify `--pull=missing`."
             )
-            assert "--restart=on-failure" in content or "--restart on-failure" in content, (
-                f"{rel}: `podman run` should include `--restart=on-failure`."
+            assert not re.search(r"--restart(?:=|\s+)", content), (
+                f"{rel}: `podman run` MUST NOT specify `--restart=` (systemd supervises `--cgroups=no-conmon` units)."
             )
 
         publish_matches = re.findall(
             r"(?:^|\s)(?:-p|--publish)(?:=|\s+)([^\s\\]+)", content, flags=re.MULTILINE
         )
         if svc == main_service:
-            assert "--network=slirp4netns:allow_host_loopback=true" in content, (
-                f"{rel}: Must configure `--network=slirp4netns:allow_host_loopback=true` for host ldapproxy/rspamd access"
+            assert re.search(r"^Restart=always\s*$", content, flags=re.MULTILINE), (
+                f"{rel}: Must declare `Restart=always` in `[Service]`."
+            )
+            assert re.search(
+                r"^ExecStartPost=/usr/local/bin/runagent\s+wait-healthy\s*$",
+                content,
+                flags=re.MULTILINE,
+            ), f"{rel}: Must declare `ExecStartPost=/usr/local/bin/runagent wait-healthy`."
+            assert re.search(
+                r"^Environment=MILTER_BIND_HOST=127\.0\.0\.1\s*$",
+                content,
+                flags=re.MULTILINE,
+            ), f"{rel}: Must provide default `Environment=MILTER_BIND_HOST=127.0.0.1`."
+            assert re.search(
+                r"^Environment=PODMAN_NETWORK_MODE=slirp4netns:allow_host_loopback=true\s*$",
+                content,
+                flags=re.MULTILINE,
+            ), (
+                f"{rel}: Must provide default `Environment=PODMAN_NETWORK_MODE=slirp4netns:allow_host_loopback=true`."
+            )
+            assert (
+                "--network=${PODMAN_NETWORK_MODE}" in content
+                or "--network=slirp4netns:allow_host_loopback=true" in content
+            ), (
+                f"{rel}: Must configure `--network=${{PODMAN_NETWORK_MODE}}` in `podman run`"
+            )
+            assert "--add-host=host.containers.internal:" not in content, (
+                f"{rel}: Must NOT manually pass `--add-host=host.containers.internal:...` (conflicts with Podman 4.7+/5.x)."
             )
             assert "--add-host=accountprovider:10.0.2.2" in content, (
                 f"{rel}: Must configure `--add-host=accountprovider:10.0.2.2`"
@@ -525,10 +594,11 @@ def test_zero_crlf_line_endings():
 
 
 def test_app_containerfile():
-    """Verify `app/Containerfile` uses Python 3.12, exposes 8080 & 8090, and runs uvicorn."""
+    """Verify `app/Containerfile` uses Python 3.12, initializes `/app/__init__.py`, exposes 8080 & 8090, and runs uvicorn."""
     assert APP_CONTAINERFILE.is_file(), "Missing `app/Containerfile`"
     text = APP_CONTAINERFILE.read_text(encoding="utf-8")
     assert "python:3.12" in text, "app/Containerfile must use python:3.12 base image"
+    assert "/app/__init__.py" in text, "app/Containerfile must create `/app/__init__.py`"
     assert "8080" in text and "8090" in text, (
         "app/Containerfile must expose ports 8080 (web) and 8090 (Phase 2 milter)"
     )

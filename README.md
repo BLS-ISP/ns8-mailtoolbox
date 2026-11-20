@@ -112,10 +112,10 @@ Open **Applications -> Mail Toolbox -> Signatures** to create HTML/Plaintext sig
 
 ```bash
 # Activate Before-DKIM Signature Milter ahead of Rspamd (127.0.0.1:11332):
-runagent -m mail1 python3 -c "import agent; agent.set_env('POSTFIX_MILTERS', 'inet:127.0.0.1:<MILTER_TCP_PORT>, inet:127.0.0.1:11332'); agent.dump_env()" && runagent -m mail1 systemctl --user reload postfix
+runagent -m mail1 python3 -c "import agent; agent.set_env('POSTFIX_MILTERS', 'inet:127.0.0.1:<MILTER_TCP_PORT>, inet:127.0.0.1:11332')" && runagent -m mail1 systemctl --user reload postfix
 
 # Rollback / Reset ns8-mail Postfix Milter to default (e.g. before uninstalling mail-toolbox):
-runagent -m mail1 python3 -c "import agent; agent.unset_env('POSTFIX_MILTERS'); agent.dump_env()" && runagent -m mail1 systemctl --user reload postfix
+runagent -m mail1 python3 -c "import agent; agent.unset_env('POSTFIX_MILTERS')" && runagent -m mail1 systemctl --user reload postfix
 ```
 
 > **Multi-Node Note:** When `mail-toolbox` and `ns8-mail` run on different cluster nodes, `mail-toolbox` automatically binds `MILTER_TCP_PORT` to the node's internal NS8 WireGuard VPN IP (`MILTER_BIND_HOST`) instead of `127.0.0.1` and populates that exact VPN IP in the Cockpit snippet.
