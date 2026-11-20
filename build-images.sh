@@ -41,7 +41,6 @@ fi
 echo "Building ${repobase}/${reponame}-app..."
 buildah bud \
     --isolation "${BUILDAH_ISOLATION:-chroot}" \
-    --force-rm \
     --tag "${repobase}/${reponame}-app" \
     --file "${PWD}/app/Containerfile" \
     "${PWD}"

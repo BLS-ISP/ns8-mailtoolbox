@@ -7,7 +7,6 @@ app/frontend/node_modules
 **/*.pyc
 .pytest_cache
 ns8-repo
-tests
 
 # Explicitly include prebuilt UI bundles required by Containerfile / build-images.sh
 !app/frontend/dist
