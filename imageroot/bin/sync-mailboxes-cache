@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Synchronize mailbox status, aliases, and Postfix forwards from ns8-mail into ./config/mailboxes_cache.json."""
+"""Synchronize mailbox status/aliases/forwards from ns8-mail and ns8-imapsync bridge state into ./config/."""
 
 from __future__ import annotations
 
@@ -11,8 +11,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import agent
-import agent.tasks
+_BIN_DIR = Path(__file__).resolve().parent
+if str(_BIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_BIN_DIR))
+
+import agent  # noqa: E402
+import agent.tasks  # noqa: E402
+from toolbox_imapsync import discover_imapsync_bridge  # noqa: E402
 
 
 def _load_env_fallback(state_dir: Path) -> dict[str, str]:
@@ -171,13 +176,26 @@ def _collect_address_records(addr_payload: Any) -> tuple[list[dict[str, Any]], l
     return records, sorted(domains)
 
 
+def _sync_imapsync_cache_safe(config_dir: Path, mail_module_uuid: str) -> None:
+    try:
+        bridge_doc = discover_imapsync_bridge(mail_module_uuid)
+        _atomic_write_json(config_dir / "imapsync_cache.json", bridge_doc, 0o600)
+    except Exception as exc:
+        print(f"Warning: Failed to update imapsync_cache.json: {exc}", file=sys.stderr)
+
+
 def main() -> int:
     state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
     config_dir = state_dir / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
 
     env = _load_env_fallback(state_dir)
+    mail_module_uuid = env.get("MAIL_MODULE_UUID", "").strip()
     mail_id = env.get("MAIL_MODULE_ID", "").strip()
+
+    # Always refresh ./config/imapsync_cache.json best-effort without affecting mailbox sync
+    _sync_imapsync_cache_safe(config_dir, mail_module_uuid)
+
     if not mail_id:
         return 0
 
@@ -231,12 +249,10 @@ def main() -> int:
         postfix_forwards = _extract_forward_destinations(mb)
 
         alias_set: set[str] = set()
-        # Include any direct aliases attached to the mailbox entry
         for direct_alias in mb.get("aliases", []) or []:
             if isinstance(direct_alias, str) and "@" in direct_alias:
                 alias_set.add(direct_alias.strip().lower())
 
-        # Match records from list-addresses (destmap / addalias / adduser)
         for rec in addr_records:
             dests: list[Any] = []
             if isinstance(rec.get("destinations"), list):

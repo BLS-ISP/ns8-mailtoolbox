@@ -188,6 +188,13 @@ class AppSettings:
     def settings_json_path(self) -> Path:
         return self.config_dir / "toolbox_settings.json"
 
+    @property
+    def imapsync_cache_path(self) -> Path:
+        env_override = os.environ.get("IMAPSYNC_CACHE_PATH", "").strip()
+        if env_override:
+            return Path(env_override)
+        return self.config_dir / "imapsync_cache.json"
+
 
 def _resolve_static_dir() -> Path | None:
     env_static = os.environ.get("STATIC_DIR", "").strip()

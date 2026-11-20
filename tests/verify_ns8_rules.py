@@ -467,7 +467,12 @@ def test_build_images_sh_labels_and_permissions():
     )
     assert auth_match, "build-images.sh missing `org.nethserver.authorizations` label"
     auth_tokens = set(auth_match.group(1).strip().split())
-    expected_auth = {"traefik@node:routeadm", "mail@any:mailadm", "cluster:accountconsumer"}
+    expected_auth = {
+        "traefik@node:routeadm",
+        "mail@any:mailadm",
+        "cluster:accountconsumer",
+        "imapsync@any:reader",
+    }
     assert auth_tokens == expected_auth, (
         f"org.nethserver.authorizations mismatch: got {sorted(auth_tokens)}, expected {sorted(expected_auth)}"
     )
@@ -914,8 +919,16 @@ def test_ui_and_portal_i18n_translations_and_fallback():
 # ============================================================================
 
 
+EXTERNAL_BRIDGED_MODULE_ACTIONS = {
+    "list-tasks",
+    "start-task",
+    "stop-task",
+    "get-log",
+}
+
+
 def _extract_ui_module_actions() -> dict[str, set[Path]]:
-    """Extract NS8 module action names invoked across `ui/src/**/*.vue`."""
+    """Extract NS8 `this.instanceName` module action names invoked across `ui/src/**/*.vue`."""
     action_to_files: dict[str, set[Path]] = {}
     for vue_path in _iter_files(UI_DIR / "src"):
         if vue_path.suffix not in {".vue", ".js"}:
@@ -932,12 +945,28 @@ def _extract_ui_module_actions() -> dict[str, set[Path]]:
         ):
             var_map[vm.group(1)] = vm.group(2)
 
+        # Ensure external bridged actions (e.g. ns8-imapsync) are NEVER invoked against `this.instanceName`
+        for own_call in re.finditer(
+            r"createModuleTaskForApp\s*\(\s*this\.instanceName\s*,\s*\{([\s\S]*?)\}\s*\)",
+            script,
+        ):
+            body = own_call.group(1)
+            for am in re.finditer(
+                r"\baction\s*:\s*(?:['\"]([a-z0-9-]+)['\"]|([A-Za-z_$][A-Za-z0-9_$]*))",
+                body,
+            ):
+                resolved_own = am.group(1) or var_map.get(am.group(2) or "")
+                assert resolved_own not in EXTERNAL_BRIDGED_MODULE_ACTIONS, (
+                    f"{vue_path.relative_to(ROOT_DIR)} invokes external imapsync action `{resolved_own}` "
+                    "on `this.instanceName` instead of the target `imapsync` module ID!"
+                )
+
         for am in re.finditer(
             r"\baction\s*:\s*(?:['\"]([a-z0-9-]+)['\"]|([A-Za-z_$][A-Za-z0-9_$]*))", script
         ):
             literal_action, var_name = am.group(1), am.group(2)
             resolved = literal_action or var_map.get(var_name or "")
-            if resolved:
+            if resolved and resolved not in EXTERNAL_BRIDGED_MODULE_ACTIONS:
                 action_to_files.setdefault(resolved, set()).add(vue_path)
 
     return action_to_files
@@ -1150,6 +1179,72 @@ def test_contract_cockpit_ui_to_imageroot_actions_and_schemas():
             f"set-vacation/validate-input.json `{date_field}` rejects open-ended (`\"\"`/`null`) dates!"
         )
 
+    # 7. Check v1.0.4 NS8 IMAP-Sync (`ns8-imapsync`) Sync Bridge contracts across imageroot & Cockpit UI
+    toolbox_imapsync_py = IMAGEROOT_DIR / "bin" / "toolbox_imapsync.py"
+    assert toolbox_imapsync_py.is_file(), "Missing `imageroot/bin/toolbox_imapsync.py`"
+    toolbox_imapsync_text = toolbox_imapsync_py.read_text(encoding="utf-8")
+    assert "def discover_imapsync_bridge" in toolbox_imapsync_text
+    assert "def normalize_imapsync_task" in toolbox_imapsync_text
+
+    sync_cache_py = IMAGEROOT_DIR / "bin" / "sync-mailboxes-cache"
+    sync_cache_text = sync_cache_py.read_text(encoding="utf-8")
+    assert "discover_imapsync_bridge" in sync_cache_text and "imapsync_cache.json" in sync_cache_text, (
+        "`imageroot/bin/sync-mailboxes-cache` must discover and persist `imapsync_cache.json`"
+    )
+
+    list_conn_script = (ACTIONS_DIR / "list-connectors" / "20read").read_text(encoding="utf-8")
+    assert "discover_imapsync_bridge" in list_conn_script and "imapsync_bridge" in list_conn_script, (
+        "`imageroot/actions/list-connectors/20read` must discover and merge `imapsync_bridge`"
+    )
+    list_conn_schema = json.loads(
+        (ACTIONS_DIR / "list-connectors" / "validate-output.json").read_text(encoding="utf-8")
+    )
+    assert list_conn_schema.get("required") == ["connectors"], (
+        "`list-connectors/validate-output.json` must keep `required == ['connectors']` for backward compatibility"
+    )
+    assert "imapsync_bridge" in list_conn_schema.get("properties", {}), (
+        "`list-connectors/validate-output.json` must define `imapsync_bridge` property"
+    )
+
+    imapsync_bridge_js = UI_DIR / "src" / "utils" / "imapsyncBridge.js"
+    imapsync_log_modal = UI_DIR / "src" / "components" / "ImapsyncLogModal.vue"
+    assert imapsync_bridge_js.is_file(), "Missing `ui/src/utils/imapsyncBridge.js`"
+    assert imapsync_log_modal.is_file(), "Missing `ui/src/components/ImapsyncLogModal.vue`"
+    bridge_js_text = imapsync_bridge_js.read_text(encoding="utf-8")
+    for exported_fn in (
+        "normalizeImapsyncTask",
+        "parseImapsyncSchedule",
+        "formatImapsyncProtocol",
+        "extractImapsyncModulesFromCluster",
+        "navigateToCockpitApp",
+    ):
+        assert exported_fn in bridge_js_text, (
+            f"`ui/src/utils/imapsyncBridge.js` missing `{exported_fn}`"
+        )
+
+    connectors_vue_text = (UI_DIR / "src" / "views" / "Connectors.vue").read_text(encoding="utf-8")
+    status_vue_text = (UI_DIR / "src" / "views" / "Status.vue").read_text(encoding="utf-8")
+    assert "ImapsyncLogModal" in connectors_vue_text and "imapsyncInstalled" in connectors_vue_text, (
+        "`Connectors.vue` must wire `ImapsyncLogModal` and `imapsyncInstalled`"
+    )
+    assert "runExternalImapsyncTask" in connectors_vue_text and "createModuleTaskForApp(targetModuleId" in connectors_vue_text, (
+        "`Connectors.vue` must dispatch external `ns8-imapsync` actions against `targetModuleId` (never `this.instanceName`)"
+    )
+    assert "imapsyncTasks" in status_vue_text and "totalConnectorsCount" in status_vue_text, (
+        "`Status.vue` must include bridged `imapsyncTasks` in `totalConnectorsCount` and `failingConnectorsCount`"
+    )
+    assert "createModuleTaskForApp(targetModuleId" in status_vue_text, (
+        "`Status.vue` must dispatch external `list-tasks` against `targetModuleId` (never `this.instanceName`)"
+    )
+
+    en_i18n = _flatten_json_keys(
+        json.loads((UI_DIR / "public" / "i18n" / "en" / "translation.json").read_text(encoding="utf-8"))
+    )
+    for ext_act in EXTERNAL_BRIDGED_MODULE_ACTIONS:
+        assert f"action.{ext_act}" in en_i18n, (
+            f"Missing `action.{ext_act}` in `ui/public/i18n/{{en,de}}/translation.json`"
+        )
+
 
 def test_release_artifacts_license_and_ns8_repo_workflow():
     """Verify root GPL-3.0 `LICENSE` and `.github/workflows/publish-ns8-repo.yml` release workflow."""
@@ -1188,6 +1283,9 @@ def test_github_release_alignment_and_english_readme():
     )
     assert "https://raw.githubusercontent.com/BLS-ISP/ns8-nethforge/repomd/ns8/updates/" in readme_text, (
         "README.md must document the BLS-ISP/ns8-nethforge Software Center repository URL"
+    )
+    assert "ns8-imapsync" in readme_text and "imapsync@any:reader" in readme_text, (
+        "README.md must document the NS8 IMAP-Sync (`ns8-imapsync`) Sync Bridge and `imapsync@any:reader` authorization"
     )
 
     forbidden_german_headings_or_phrases = (

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""List external POP3/IMAP mail connectors via GET /api/internal/connectors."""
+"""List external POP3/IMAP mail connectors via GET /api/internal/connectors merged with live NS8 IMAP-Sync bridge discovery."""
 
 from __future__ import annotations
 
@@ -10,6 +10,66 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
+
+_BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
+if str(_BIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_BIN_DIR))
+
+from toolbox_imapsync import discover_imapsync_bridge  # noqa: E402
+
+
+def _persist_imapsync_cache(state_dir: Path, bridge_doc: dict[str, Any]) -> None:
+    try:
+        config_dir = state_dir / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = config_dir / "imapsync_cache.json"
+        tmp_path = config_dir / f".imapsync_cache.json.tmp.{os.getpid()}"
+        content = json.dumps(bridge_doc, indent=2, ensure_ascii=False) + "\n"
+        fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(str(tmp_path), 0o600)
+        os.replace(str(tmp_path), str(cache_path))
+    except Exception:
+        pass
+
+
+def _merge_bridge_data(
+    live_bridge: dict[str, Any],
+    cached_bridge: Any,
+) -> dict[str, Any]:
+    if live_bridge.get("instances"):
+        cached_by_id: dict[str, dict[str, Any]] = {}
+        if isinstance(cached_bridge, dict):
+            for c_inst in cached_bridge.get("instances", []) or []:
+                if isinstance(c_inst, dict) and c_inst.get("module_id"):
+                    cached_by_id[str(c_inst["module_id"])] = c_inst
+
+        merged_instances: list[dict[str, Any]] = []
+        for inst in live_bridge["instances"]:
+            if not inst.get("tasks_loaded"):
+                prev = cached_by_id.get(str(inst.get("module_id")))
+                if prev and prev.get("tasks_loaded") and isinstance(prev.get("tasks"), list):
+                    inst = {
+                        **inst,
+                        "tasks_loaded": True,
+                        "tasks": prev["tasks"],
+                    }
+            merged_instances.append(inst)
+
+        return {
+            **live_bridge,
+            "installed": True,
+            "instances": merged_instances,
+        }
+
+    if isinstance(cached_bridge, dict) and cached_bridge.get("instances"):
+        return cached_bridge
+
+    return live_bridge
 
 
 def main() -> int:
@@ -18,8 +78,18 @@ def main() -> int:
     state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
     token_path = state_dir / "config" / "internal.token"
 
+    # Always discover installed ns8-imapsync instances even before mail-toolbox is configured
+    live_bridge = discover_imapsync_bridge(mail_module_uuid)
+    _persist_imapsync_cache(state_dir, live_bridge)
+
     if not mail_module_uuid or not web_tcp_port or not token_path.is_file():
-        json.dump({"connectors": []}, sys.stdout)
+        json.dump(
+            {
+                "connectors": [],
+                "imapsync_bridge": live_bridge,
+            },
+            sys.stdout,
+        )
         return 0
 
     token = token_path.read_text(encoding="utf-8").strip()
@@ -34,7 +104,13 @@ def main() -> int:
 
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            sys.stdout.write(resp.read().decode("utf-8"))
+            backend_data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(backend_data, dict):
+                backend_data["imapsync_bridge"] = _merge_bridge_data(
+                    live_bridge,
+                    backend_data.get("imapsync_bridge"),
+                )
+            json.dump(backend_data, sys.stdout)
     except urllib.error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="replace")
         print(f"Backend HTTP {exc.code}: {err_body}", file=sys.stderr)

@@ -32,6 +32,7 @@ from app.backend.config import (
 )
 from app.backend.connector_service import (
     delete_connector,
+    get_imapsync_bridge_status,
     list_connectors,
     save_connector,
     sync_connector_by_id,
@@ -639,7 +640,11 @@ async def internal_get_connectors(
     _token: str = Depends(require_internal_token),
 ) -> dict[str, Any]:
     items = await asyncio.to_thread(list_connectors)
-    return {"connectors": items}
+    bridge = await asyncio.to_thread(get_imapsync_bridge_status)
+    return {
+        "connectors": items,
+        "imapsync_bridge": bridge,
+    }
 
 
 @app.post("/api/internal/connectors")

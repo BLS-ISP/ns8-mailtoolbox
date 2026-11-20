@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "list-connectors output",
   "$id": "http://nethserver.org/json-schema/task/output/mail-toolbox/list-connectors",
-  "description": "External POP3/IMAP mail connectors and sync health status",
+  "description": "External POP3/IMAP mail connectors and discovered NS8 IMAP-Sync (`ns8-imapsync`) bridge status",
   "type": "object",
   "additionalProperties": true,
   "required": [
@@ -48,6 +48,69 @@
           "last_error": { "type": "string" },
           "consecutive_failures": { "type": "integer" },
           "messages_fetched_total": { "type": "integer" }
+        }
+      }
+    },
+    "imapsync_bridge": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "installed",
+        "instances"
+      ],
+      "properties": {
+        "installed": { "type": "boolean" },
+        "updated_at": { "type": ["string", "null"] },
+        "instances": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "module_id",
+              "ui_name",
+              "node_id",
+              "mail_server",
+              "mail_host",
+              "coupled",
+              "tasks_loaded",
+              "tasks"
+            ],
+            "properties": {
+              "module_id": { "type": "string" },
+              "ui_name": { "type": "string" },
+              "node_id": { "type": "integer" },
+              "mail_server": { "type": "string" },
+              "mail_host": { "type": "string" },
+              "coupled": { "type": "boolean" },
+              "tasks_loaded": { "type": "boolean" },
+              "tasks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "task_id": { "type": "string" },
+                    "localuser": { "type": "string" },
+                    "name": { "type": "string" },
+                    "remotehost": { "type": "string" },
+                    "remoteport": { "type": "integer" },
+                    "remoteuser": { "type": "string" },
+                    "security": { "type": "string" },
+                    "synchronization": { "type": "string" },
+                    "service_running": { "type": "boolean" },
+                    "sieve_enabled": { "type": "boolean" },
+                    "delete_local": { "type": "boolean" },
+                    "delete_remote": { "type": "boolean" },
+                    "delete_remote_older": { "type": "integer" },
+                    "last_sync_timestamp": { "type": ["integer", "null"] },
+                    "last_sync_exit_code": { "type": ["integer", "null"] },
+                    "has_log": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     }

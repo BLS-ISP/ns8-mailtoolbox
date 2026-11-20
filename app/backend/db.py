@@ -178,6 +178,13 @@ CREATE TABLE IF NOT EXISTS connector_seen_uids (
     fetched_at TEXT NOT NULL,
     PRIMARY KEY (connector_id, uid)
 );
+
+CREATE TABLE IF NOT EXISTS imapsync_alert_state (
+    task_key TEXT PRIMARY KEY,
+    last_exit_code INTEGER,
+    last_timestamp INTEGER,
+    last_alert_sent_at TEXT NOT NULL DEFAULT ''
+);
 """
 
 DEFAULT_TEMPLATES: list[dict[str, Any]] = [
@@ -1323,6 +1330,54 @@ def mark_connector_uids_seen(
                 """,
                 [(int(connector_id), u, now) for u in uids],
             )
+
+
+def get_imapsync_alert_state(
+    task_key: str,
+    db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    init_db(db_path)
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM imapsync_alert_state WHERE task_key = ?",
+            (task_key,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def upsert_imapsync_alert_state(
+    *,
+    task_key: str,
+    last_exit_code: int | None,
+    last_timestamp: int | None,
+    last_alert_sent_at: str,
+    db_path: Path | None = None,
+) -> None:
+    init_db(db_path)
+    with get_connection(db_path) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO imapsync_alert_state (
+                    task_key, last_exit_code, last_timestamp, last_alert_sent_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(task_key) DO UPDATE SET
+                    last_exit_code = excluded.last_exit_code,
+                    last_timestamp = excluded.last_timestamp,
+                    last_alert_sent_at = excluded.last_alert_sent_at
+                """,
+                (task_key, last_exit_code, last_timestamp, last_alert_sent_at or ""),
+            )
+
+
+def clear_imapsync_alert_state(
+    task_key: str,
+    db_path: Path | None = None,
+) -> None:
+    init_db(db_path)
+    with get_connection(db_path) as conn:
+        with conn:
+            conn.execute("DELETE FROM imapsync_alert_state WHERE task_key = ?", (task_key,))
 
 
 def _row_to_vacation_rule(row: sqlite3.Row) -> dict[str, Any]:

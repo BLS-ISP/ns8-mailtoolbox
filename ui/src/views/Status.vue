@@ -303,11 +303,11 @@
         </NsInfoCard>
       </cv-column>
 
-      <!-- Phase 3c: External POP3/IMAP Connectors Card -->
+      <!-- Phase 3c: External POP3/IMAP Connectors + NS8 IMAP-Sync Bridge Card -->
       <cv-column :md="4" :max="4">
         <NsInfoCard
           light
-          :title="String(connectors.length)"
+          :title="String(totalConnectorsCount)"
           :description="$t('status.connectors_card')"
           :icon="Connect32"
           :loading="loading.getConfiguration || loading.listConnectors"
@@ -316,6 +316,16 @@
           <template slot="content">
             <div class="card-extra-content">
               <div class="kpi-tags">
+                <NsTag
+                  v-if="imapsyncInstalled"
+                  :label="
+                    $t('status.imapsync_tasks_badge', {
+                      count: imapsyncTasks.length,
+                    })
+                  "
+                  kind="purple"
+                  size="sm"
+                />
                 <NsTag
                   v-if="failingConnectorsCount > 0"
                   :label="
@@ -333,7 +343,10 @@
                   size="sm"
                 />
               </div>
-              <div v-if="configuration.configured" class="portal-link-row">
+              <div
+                v-if="configuration.configured || imapsyncInstalled"
+                class="portal-link-row"
+              >
                 <cv-link @click="goToAppPage(instanceName, 'connectors')">
                   {{ $t("status.manage_connectors_link") }}
                 </cv-link>
@@ -595,6 +608,10 @@ import Globe32 from "@carbon/icons-vue/es/globe/32";
 import Calendar32 from "@carbon/icons-vue/es/calendar/32";
 import Pen32 from "@carbon/icons-vue/es/pen/32";
 import Connect32 from "@carbon/icons-vue/es/connect/32";
+import {
+  normalizeImapsyncTask,
+  extractImapsyncModulesFromCluster,
+} from "../utils/imapsyncBridge";
 
 export default {
   name: "Status",
@@ -654,6 +671,7 @@ export default {
         messages_signed: 0,
       },
       connectors: [],
+      imapsyncInstances: [],
       backupRepositories: [],
       backups: [],
       loading: {
@@ -676,8 +694,33 @@ export default {
   },
   computed: {
     ...mapState(["instanceName", "instanceLabel", "core", "appName"]),
+    imapsyncInstalled() {
+      return this.imapsyncInstances.length > 0;
+    },
+    imapsyncTasks() {
+      const rows = [];
+      for (const inst of this.imapsyncInstances) {
+        if (inst.coupled === false) {
+          continue;
+        }
+        const tasks = Array.isArray(inst.tasks) ? inst.tasks : [];
+        for (const rawTask of tasks) {
+          rows.push(normalizeImapsyncTask(rawTask, inst, []));
+        }
+      }
+      return rows;
+    },
+    totalConnectorsCount() {
+      return this.connectors.length + this.imapsyncTasks.length;
+    },
     failingConnectorsCount() {
-      return this.connectors.filter((c) => c.last_status === "error").length;
+      const nativeFailures = this.connectors.filter(
+        (c) => c.last_status === "error"
+      ).length;
+      const imapsyncFailures = this.imapsyncTasks.filter(
+        (t) => t.last_status === "error"
+      ).length;
+      return nativeFailures + imapsyncFailures;
     },
     installationNodeTitle() {
       if (this.status && this.status.node) {
@@ -811,8 +854,8 @@ export default {
       if (this.configuration.configured === true) {
         this.listMailboxes();
         this.listSignatures();
-        this.listConnectors();
       }
+      this.listConnectors();
     },
     async listMailboxes() {
       this.loading.listMailboxes = true;
@@ -916,6 +959,31 @@ export default {
           const out = (taskResult && taskResult.output) || {};
           this.connectors = Array.isArray(out.connectors) ? out.connectors : [];
           this.loading.listConnectors = false;
+
+          if (
+            out.imapsync_bridge &&
+            Array.isArray(out.imapsync_bridge.instances) &&
+            out.imapsync_bridge.instances.length > 0
+          ) {
+            this.imapsyncInstances = out.imapsync_bridge.instances.map(
+              (inst) => ({
+                ...inst,
+                tasks: Array.isArray(inst.tasks) ? inst.tasks : [],
+              })
+            );
+            for (const inst of this.imapsyncInstances) {
+              if (inst.coupled !== false && !inst.tasks_loaded) {
+                this.fetchImapsyncInstanceTasks(inst.module_id);
+              }
+            }
+          } else if (
+            !out.imapsync_bridge ||
+            out.imapsync_bridge.installed === undefined
+          ) {
+            this.discoverImapsyncViaCluster();
+          } else {
+            this.imapsyncInstances = [];
+          }
         }
       );
 
@@ -932,6 +1000,74 @@ export default {
       if (res[0]) {
         this.loading.listConnectors = false;
       }
+    },
+    async discoverImapsyncViaCluster() {
+      const taskAction = "list-installed-modules";
+      const eventId = this.getUuid();
+
+      this.core.$root.$once(`${taskAction}-aborted-${eventId}`, () => {});
+      this.core.$root.$once(
+        `${taskAction}-completed-${eventId}`,
+        (taskContext, taskResult) => {
+          const discovered = extractImapsyncModulesFromCluster(
+            taskResult && taskResult.output
+          );
+          if (discovered.length > 0) {
+            this.imapsyncInstances = discovered;
+            for (const inst of discovered) {
+              this.fetchImapsyncInstanceTasks(inst.module_id);
+            }
+          }
+        }
+      );
+
+      await to(
+        this.createClusterTaskForApp({
+          action: "list-installed-modules",
+          extra: {
+            title: this.$t("action." + taskAction),
+            isNotificationHidden: true,
+            eventId,
+          },
+        })
+      );
+    },
+    runExternalImapsyncTask(targetModuleId, externalAction, extra) {
+      return this.createModuleTaskForApp(targetModuleId, {
+        action: externalAction,
+        extra,
+      });
+    },
+    async fetchImapsyncInstanceTasks(imapsyncModuleId) {
+      if (!imapsyncModuleId) {
+        return;
+      }
+      const extAction = ["list", "tasks"].join("-");
+      const eventId = this.getUuid();
+
+      this.core.$root.$once(`${extAction}-aborted-${eventId}`, () => {});
+      this.core.$root.$once(
+        `${extAction}-completed-${eventId}`,
+        (taskContext, taskResult) => {
+          const output = (taskResult && taskResult.output) || {};
+          const userProps = Array.isArray(output.user_properties)
+            ? output.user_properties
+            : [];
+          this.imapsyncInstances = this.imapsyncInstances.map((inst) =>
+            inst.module_id === imapsyncModuleId
+              ? { ...inst, tasks_loaded: true, tasks: userProps }
+              : inst
+          );
+        }
+      );
+
+      await to(
+        this.runExternalImapsyncTask(imapsyncModuleId, extAction, {
+          title: this.$t("action." + extAction),
+          isNotificationHidden: true,
+          eventId,
+        })
+      );
     },
     async listBackupRepositories() {
       this.loading.listBackupRepositories = true;

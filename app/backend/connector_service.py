@@ -15,6 +15,7 @@ from email.message import EmailMessage
 import email.policy
 import hashlib
 import imaplib
+import json
 import logging
 import poplib
 import ssl
@@ -25,13 +26,16 @@ from cryptography.fernet import Fernet, InvalidToken
 from app.backend.config import AppSettings, get_settings
 from app.backend.db import (
     add_audit_entry,
+    clear_imapsync_alert_state,
     delete_connector_db,
     get_connector_db,
+    get_imapsync_alert_state,
     get_seen_connector_uids,
     list_connectors_db,
     mark_connector_uids_seen,
     save_connector_db,
     update_connector_sync_result,
+    upsert_imapsync_alert_state,
     utc_now_iso,
 )
 from app.backend.quarantine_service import deliver_smtp_raw
@@ -458,3 +462,191 @@ def sync_due_connectors() -> int:
             sync_connector_by_id(int(c["id"]))
             synced += 1
     return synced
+
+
+def get_imapsync_bridge_status() -> dict[str, Any]:
+    """Read `./config/imapsync_cache.json` written by `imageroot/bin/toolbox_imapsync.py`."""
+    settings = get_settings()
+    cache_file = settings.imapsync_cache_path
+    if not cache_file.is_file():
+        return {"installed": False, "updated_at": None, "instances": []}
+    try:
+        raw = json.loads(cache_file.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return {"installed": False, "updated_at": None, "instances": []}
+        raw_instances = raw.get("instances")
+        if not isinstance(raw_instances, list):
+            raw_instances = []
+        instances = [inst for inst in raw_instances if isinstance(inst, dict)]
+        installed = bool(raw.get("installed", bool(instances)))
+        updated_at = raw.get("updated_at")
+        return {
+            "installed": installed,
+            "updated_at": str(updated_at) if updated_at is not None else None,
+            "instances": instances,
+        }
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("Failed reading imapsync_cache.json (%s): %s", cache_file, exc)
+        return {"installed": False, "updated_at": None, "instances": []}
+
+
+def _send_imapsync_failure_alert(
+    *,
+    module_id: str,
+    ui_name: str,
+    task: dict[str, Any],
+    exit_code: int,
+    last_ts: int | None,
+    settings: AppSettings,
+) -> bool:
+    alert_to = (settings.runtime.admin_alert_email or "").strip()
+    if not alert_to:
+        return False
+
+    domain = settings.ldap.domain or settings.portal_hostname or "localhost"
+    mail_from = f"connector-alert@{domain}"
+
+    task_id = str(task.get("task_id") or "")
+    localuser = str(task.get("localuser") or "")
+    remoteuser = str(task.get("remoteuser") or "")
+    remotehost = str(task.get("remotehost") or "")
+    remoteport = task.get("remoteport", 993)
+    security = str(task.get("security") or "plain")
+    task_label = str(task.get("name") or f"{remoteuser} -> {localuser}").strip()
+
+    ts_str = "unknown"
+    if last_ts is not None and last_ts > 0:
+        try:
+            ts_str = (
+                datetime.fromtimestamp(int(last_ts), tz=timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+        except (OSError, OverflowError, ValueError):
+            ts_str = str(last_ts)
+
+    mod_display = f"{module_id} ({ui_name})" if ui_name else module_id
+    msg = EmailMessage()
+    msg["From"] = mail_from
+    msg["To"] = alert_to
+    msg["Subject"] = f"[NS8 Mail Toolbox] NS8 IMAP-Sync Task Failure Alert: {task_label}"
+    msg.set_content(
+        "Warning: An NS8 IMAP-Sync (ns8-imapsync) synchronization task reported a non-zero exit code.\n\n"
+        f"IMAP-Sync Module: {mod_display}\n"
+        f"Task:             {task_label} ({task_id})\n"
+        f"Remote Account:   {remoteuser} @ {remotehost}:{remoteport} ({security})\n"
+        f"Local Mailbox:    {localuser}\n"
+        f"Last Exit Code:   {exit_code}\n"
+        f"Last Sync Time:   {ts_str}\n\n"
+        f"Please inspect the task log in NS8 Cockpit under Mail Toolbox -> Connectors or {module_id} -> Tasks.\n",
+        cte="8bit",
+    )
+    try:
+        smtp_policy = email.policy.SMTP.clone(max_line_length=998)
+        deliver_smtp_raw(
+            msg.as_bytes(policy=smtp_policy),
+            mail_from,
+            alert_to,
+            settings.mail,
+        )
+        return True
+    except Exception as smtp_exc:
+        logger.warning("Failed sending imapsync failure alert to %s: %s", alert_to, smtp_exc)
+        return False
+
+
+def check_imapsync_bridge_alerts() -> int:
+    """Send 24h-rate-limited admin warning emails for failing coupled ns8-imapsync tasks."""
+    settings = get_settings()
+    bridge = get_imapsync_bridge_status()
+    if not bridge.get("installed"):
+        return 0
+
+    alerts_sent = 0
+    for inst in bridge.get("instances", []):
+        if not isinstance(inst, dict):
+            continue
+        if not bool(inst.get("coupled", False)) or not bool(inst.get("tasks_loaded", False)):
+            continue
+
+        module_id = str(inst.get("module_id") or "").strip()
+        ui_name = str(inst.get("ui_name") or "").strip()
+        tasks = inst.get("tasks")
+        if not module_id or not isinstance(tasks, list):
+            continue
+
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            task_id = str(task.get("task_id") or "").strip()
+            localuser = str(task.get("localuser") or "").strip()
+            if not task_id:
+                continue
+
+            task_key = f"{module_id}:{localuser}:{task_id}"
+            raw_exit = task.get("last_sync_exit_code")
+            exit_code: int | None = None
+            if raw_exit is not None and not isinstance(raw_exit, bool):
+                try:
+                    exit_code = int(raw_exit)
+                except (TypeError, ValueError):
+                    exit_code = None
+
+            raw_ts = task.get("last_sync_timestamp")
+            last_ts: int | None = None
+            if raw_ts is not None and not isinstance(raw_ts, bool):
+                try:
+                    last_ts = int(raw_ts)
+                except (TypeError, ValueError):
+                    last_ts = None
+
+            if exit_code is None:
+                continue
+
+            if exit_code == 0:
+                # Reset alert state upon recovery so future failures alert immediately
+                clear_imapsync_alert_state(task_key, settings.sqlite_path)
+                continue
+
+            existing = get_imapsync_alert_state(task_key, settings.sqlite_path)
+            prev_alert_at = str(existing["last_alert_sent_at"] or "") if existing else ""
+
+            sent_now = False
+            if (settings.runtime.admin_alert_email or "").strip() and _should_send_failure_alert(
+                prev_alert_at
+            ):
+                sent_now = _send_imapsync_failure_alert(
+                    module_id=module_id,
+                    ui_name=ui_name,
+                    task=task,
+                    exit_code=exit_code,
+                    last_ts=last_ts,
+                    settings=settings,
+                )
+
+            effective_alert_at = utc_now_iso() if sent_now else prev_alert_at
+            upsert_imapsync_alert_state(
+                task_key=task_key,
+                last_exit_code=exit_code,
+                last_timestamp=last_ts,
+                last_alert_sent_at=effective_alert_at,
+                db_path=settings.sqlite_path,
+            )
+
+            if sent_now:
+                alerts_sent += 1
+                task_label = str(task.get("name") or f"{task.get('remoteuser', '')} -> {localuser}")
+                add_audit_entry(
+                    actor="system",
+                    source="imapsync_bridge",
+                    target_user=localuser,
+                    action="imapsync_failure_alert",
+                    details=(
+                        f"Sent admin alert for failing {module_id} task {task_label!r} "
+                        f"(exit_code={exit_code})"
+                    ),
+                    db_path=settings.sqlite_path,
+                )
+
+    return alerts_sent

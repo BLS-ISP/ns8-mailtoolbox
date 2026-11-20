@@ -17,7 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.backend.config import get_settings
-from app.backend.connector_service import sync_due_connectors
+from app.backend.connector_service import check_imapsync_bridge_alerts, sync_due_connectors
 from app.backend.db import (
     add_audit_entry,
     get_enabled_vacation_rules,
@@ -279,6 +279,10 @@ def _run_background_tick() -> None:
         sync_due_connectors()
     except Exception as exc:
         logger.exception("Scheduled connector sync failed: %s", exc)
+    try:
+        check_imapsync_bridge_alerts()
+    except Exception as exc:
+        logger.exception("Scheduled imapsync bridge alert check failed: %s", exc)
 
 
 async def reconciler_loop(stop_event: asyncio.Event) -> None:

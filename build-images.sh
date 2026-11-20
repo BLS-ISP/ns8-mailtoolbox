@@ -73,7 +73,7 @@ container=$(buildah from scratch)
 buildah add "${container}" "${tmp_imageroot}" /imageroot
 buildah add "${container}" ui/dist /ui
 buildah config --entrypoint=/ \
-    --label="org.nethserver.authorizations=traefik@node:routeadm mail@any:mailadm cluster:accountconsumer" \
+    --label="org.nethserver.authorizations=traefik@node:routeadm mail@any:mailadm cluster:accountconsumer imapsync@any:reader" \
     --label="org.nethserver.tcp-ports-demand=2" \
     --label="org.nethserver.rootfull=0" \
     --label="org.nethserver.min-core=3.20.1" \

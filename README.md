@@ -34,9 +34,10 @@ In small and medium-sized organizations running **NethServer 8 (`ns8-mail` + `ns
    - Polls Rspamd Controller `/history` (`127.0.0.1:11334` via rootless `slirp4netns` host loopback `10.0.2.2`) into a deduplicated local SQLite table (`mail_history_cache`), preserving searchable delivery logs (`delivered`, `spam`, `greylisted`, `rejected`, scores, symbols, Message-ID, client IP) well beyond Rspamd's in-memory ring buffer.
    - Can optionally be exposed in **read-only mode** inside the Secretariat Web Portal (`portal_tracking_enabled`) so reception staff can verify whether expected customer emails arrived without Cockpit admin privileges.
 
-5. **External POP3/IMAP Mail Connectors with Automatic Admin Failure Alerts:**
+5. **External POP3/IMAP Mail Connectors, NS8 IMAP-Sync (`ns8-imapsync`) Bridge & Admin Alerts:**
    - Periodically fetches external mailboxes (`imaps`, `imap`, `pop3s`, `pop3`) with Fernet-encrypted credentials at rest (`APP_SECRET_KEY`), UID/UIDL deduplication (`leave_on_server` configurable), and local SMTP delivery.
-   - Automatically sends a warning email (with 24-hour alert cooldown) to `admin_alert_email` and flags the Cockpit status dashboard whenever an external provider login fails (for example, after an external password change).
+   - **Automatic `ns8-imapsync` Sync Bridge:** Whenever one or more official **NS8 IMAP-Sync (`ns8-imapsync`)** instances (`imapsync1`, etc.) are installed on the cluster, their sync tasks are automatically discovered and displayed alongside native Mail Toolbox connectors in Cockpit (`Connectors` & `Status`) with direct Start, Stop, Live Log Viewer, and deep-link controls.
+   - Automatically sends a warning email (with 24-hour alert cooldown) to `admin_alert_email` and flags the Cockpit status dashboard whenever a native POP3/IMAP connector or coupled `ns8-imapsync` task fails.
 
 ---
 
@@ -75,9 +76,9 @@ flowchart TB
     EXT -->|"POP3S / IMAPS Fetch"| APP
 ```
 
-### Update Safety with `ns8-mail` and `ns8-sogo`
-- **Zero Container Patching:** `ns8-mail-toolbox` runs in its own isolated rootless Podman user namespace and communicates exclusively via official NS8 authorizations (`traefik@node:routeadm`, `mail@any:mailadm`, `cluster:accountconsumer`), standard RFC protocols (ManageSieve, IMAP, SMTP, LDAP, HTTP, Milter), and NS8 persistent environment hooks (`POSTFIX_MILTERS`).
-- **Cluster Event Listeners:** Automatically refreshes service endpoints and mailbox/alias caches whenever `ns8-mail` emits `mail-settings-changed` or the account provider emits `user-domain-changed`.
+### Update Safety with `ns8-mail`, `ns8-sogo`, and `ns8-imapsync`
+- **Zero Container Patching:** `ns8-mail-toolbox` runs in its own isolated rootless Podman user namespace and communicates exclusively via official NS8 authorizations (`traefik@node:routeadm`, `mail@any:mailadm`, `cluster:accountconsumer`, `imapsync@any:reader`), standard RFC protocols (ManageSieve, IMAP, SMTP, LDAP, HTTP, Milter), and NS8 persistent environment hooks (`POSTFIX_MILTERS`).
+- **Cluster Event Listeners:** Automatically refreshes service endpoints, mailbox/alias caches, and `ns8-imapsync` bridge state whenever `ns8-mail` emits `mail-settings-changed`, the account provider emits `user-domain-changed`, or the 10-minute sync timer fires.
 
 ---
 
@@ -123,7 +124,7 @@ runagent -m mail1 python3 -c "import agent; agent.unset_env('POSTFIX_MILTERS')" 
 ### 3. Rspamd Mail-Tracking, Quarantine Digest & Connectors
 - **Rspamd Controller Auto-Discovery, Basic Auth & Self-Signed TLS:** `Mail Toolbox` automatically discovers the Rspamd URL from `ns8-mail` (such as `https://mail.example.com/rspamd` via Traefik `forward_auth` or `http://127.0.0.1:11334` locally), normalizes `/history` suffixes, accepts self-signed NS8 TLS certificates by default (`rspamd_tls_verify=false`), supports both Traefik HTTP Basic Auth (`rspamd_user` + `rspamd_password`) and direct `Password` headers, and includes split-DNS / hairpin-NAT fallback plus one-click connection testing.
 - **Daily Quarantine Digest:** Enable the daily digest schedule (`HH:MM` and IANA timezone, e.g. `07:30` / `Europe/Berlin`) or trigger an immediate run from **Mail Tracking -> Quarantine**.
-- **External POP3/IMAP Connectors:** Configure external accounts under **Connectors** (including quick presets for common providers, connection testing, manual sync, and `admin_alert_email` failure notifications).
+- **External POP3/IMAP Connectors & NS8 IMAP-Sync Bridge:** Configure native POP3/IMAP accounts under **Connectors** (including quick presets for common providers, connection testing, manual sync, and `admin_alert_email` failure notifications). Any installed `ns8-imapsync` instances coupled to the mail server appear automatically in the same unified table with Start/Stop/Log actions and shared `admin_alert_email` monitoring.
 
 ---
 
