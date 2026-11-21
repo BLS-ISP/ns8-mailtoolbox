@@ -158,6 +158,7 @@ def main() -> int:
                 "lets_encrypt": lets_encrypt,
                 "http2https": http2https,
             },
+            extra={"isNotificationHidden": True},
         )
         agent.assert_exp(route_res.get("exit_code") == 0, "Failed to configure Traefik route on clone")
 

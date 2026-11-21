@@ -642,6 +642,7 @@ export default {
           extra: {
             title: this.$t("action." + taskAction),
             description: this.$t("common.processing"),
+            isNotificationHidden: true,
             eventId,
           },
         })

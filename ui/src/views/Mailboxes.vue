@@ -93,7 +93,7 @@
               :icon="Renew20"
               :loading="loading.listMailboxes"
               :disabled="loading.listMailboxes"
-              @click="reloadAll"
+              @click="reloadAll(true)"
             >
               {{ $t("common.refresh") }}
             </NsButton>
@@ -476,7 +476,7 @@ export default {
     next();
   },
   created() {
-    this.reloadAll();
+    this.reloadAll(false);
   },
   methods: {
     coreT(coreKey, fallbackKey) {
@@ -517,11 +517,11 @@ export default {
       }
       return this.$t("mailboxes.open_ended");
     },
-    reloadAll() {
-      this.listMailboxes();
+    reloadAll(forceRefresh = false) {
+      this.listMailboxes(forceRefresh === true);
       this.getTemplates();
     },
-    async listMailboxes() {
+    async listMailboxes(forceRefresh = false) {
       this.loading.listMailboxes = true;
       this.error.listMailboxes = "";
       const taskAction = "list-mailboxes";
@@ -539,6 +539,7 @@ export default {
       const res = await to(
         this.createModuleTaskForApp(this.instanceName, {
           action: "list-mailboxes",
+          ...(forceRefresh === true ? { data: { force_refresh: true } } : {}),
           extra: {
             title: this.$t("action." + taskAction),
             isNotificationHidden: true,
@@ -683,6 +684,7 @@ export default {
           extra: {
             title: this.$t("action." + taskAction),
             description: row.display_name || row.user,
+            isNotificationHidden: true,
             eventId,
           },
         })

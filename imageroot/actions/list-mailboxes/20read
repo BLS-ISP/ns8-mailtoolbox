@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Synchronize mailbox cache best-effort and proxy GET /api/internal/mailboxes."""
+"""Synchronize mailbox cache with smart 5-minute TTL (unless force_refresh) and proxy GET /api/internal/mailboxes."""
 
 from __future__ import annotations
 
@@ -24,7 +24,20 @@ EMPTY_RESPONSE = {
 }
 
 
+def _read_force_refresh_flag() -> bool:
+    try:
+        raw = sys.stdin.read().strip()
+        if raw:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return bool(parsed.get("force_refresh", False))
+    except Exception:
+        pass
+    return False
+
+
 def main() -> int:
+    force_refresh = _read_force_refresh_flag()
     mail_module_uuid = os.environ.get("MAIL_MODULE_UUID", "").strip()
     web_tcp_port = os.environ.get("WEB_TCP_PORT", "").strip()
 
@@ -32,9 +45,14 @@ def main() -> int:
         json.dump(EMPTY_RESPONSE, sys.stdout)
         return 0
 
+    sync_cmd = (
+        ["sync-mailboxes-cache", "--skip-imapsync"]
+        if force_refresh
+        else ["sync-mailboxes-cache", "--min-age", "300", "--skip-imapsync"]
+    )
     try:
         subprocess.run(
-            ["sync-mailboxes-cache"],
+            sync_cmd,
             stdout=subprocess.DEVNULL,
             timeout=15,
             check=False,

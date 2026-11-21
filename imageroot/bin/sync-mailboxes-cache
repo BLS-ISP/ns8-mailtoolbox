@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,8 @@ if str(_BIN_DIR) not in sys.path:
 import agent  # noqa: E402
 import agent.tasks  # noqa: E402
 from toolbox_imapsync import discover_imapsync_bridge  # noqa: E402
+
+_HIDDEN_TASK_EXTRA = {"isNotificationHidden": True}
 
 
 def _load_env_fallback(state_dir: Path) -> dict[str, str]:
@@ -69,6 +73,20 @@ def _atomic_write_json(dest: Path, payload: dict[str, Any], mode: int = 0o600) -
         except OSError:
             pass
         raise
+
+
+def _is_cache_fresh(cache_path: Path, min_age_seconds: int) -> bool:
+    if min_age_seconds <= 0 or not cache_path.is_file():
+        return False
+    try:
+        stat = cache_path.stat()
+        if stat.st_size <= 2:
+            return False
+        if (time.time() - stat.st_mtime) < min_age_seconds:
+            return True
+    except OSError:
+        return False
+    return False
 
 
 def _extract_forward_destinations(mailbox_item: dict[str, Any]) -> list[str]:
@@ -176,15 +194,34 @@ def _collect_address_records(addr_payload: Any) -> tuple[list[dict[str, Any]], l
     return records, sorted(domains)
 
 
-def _sync_imapsync_cache_safe(config_dir: Path, mail_module_uuid: str) -> None:
+def _sync_imapsync_cache_safe(config_dir: Path, mail_module_uuid: str, min_age: int = 0) -> None:
+    imapsync_cache_path = config_dir / "imapsync_cache.json"
+    if _is_cache_fresh(imapsync_cache_path, min_age):
+        return
     try:
-        bridge_doc = discover_imapsync_bridge(mail_module_uuid)
-        _atomic_write_json(config_dir / "imapsync_cache.json", bridge_doc, 0o600)
+        bridge_doc = discover_imapsync_bridge(
+            mail_module_uuid,
+            fetch_tasks=True,
+            only_coupled=True,
+        )
+        _atomic_write_json(imapsync_cache_path, bridge_doc, 0o600)
     except Exception as exc:
         print(f"Warning: Failed to update imapsync_cache.json: {exc}", file=sys.stderr)
 
 
-def main() -> int:
+def _parse_cli_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--min-age", type=int, default=0)
+    parser.add_argument("--skip-imapsync", action="store_true", default=False)
+    args, _ = parser.parse_known_args([] if argv is None else argv)
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    cli = _parse_cli_args(argv)
+    min_age = max(0, int(cli.min_age or 0))
+    skip_imapsync = bool(cli.skip_imapsync)
+
     state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
     config_dir = state_dir / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -193,15 +230,20 @@ def main() -> int:
     mail_module_uuid = env.get("MAIL_MODULE_UUID", "").strip()
     mail_id = env.get("MAIL_MODULE_ID", "").strip()
 
-    # Always refresh ./config/imapsync_cache.json best-effort without affecting mailbox sync
-    _sync_imapsync_cache_safe(config_dir, mail_module_uuid)
+    if not skip_imapsync:
+        _sync_imapsync_cache_safe(config_dir, mail_module_uuid, min_age=min_age)
 
     if not mail_id:
+        return 0
+
+    mailboxes_cache_path = config_dir / "mailboxes_cache.json"
+    if _is_cache_fresh(mailboxes_cache_path, min_age):
         return 0
 
     mb_res = agent.tasks.run(
         agent_id=f"module/{mail_id}",
         action="list-user-mailboxes",
+        extra=_HIDDEN_TASK_EXTRA,
     )
     if mb_res.get("exit_code") != 0:
         print(
@@ -227,6 +269,7 @@ def main() -> int:
     addr_res = agent.tasks.run(
         agent_id=f"module/{mail_id}",
         action="list-addresses",
+        extra=_HIDDEN_TASK_EXTRA,
     )
     if addr_res.get("exit_code") == 0:
         addr_payload = _parse_task_output(addr_res)
@@ -281,9 +324,9 @@ def main() -> int:
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "mailboxes": mailboxes_out,
     }
-    _atomic_write_json(config_dir / "mailboxes_cache.json", cache_doc, 0o600)
+    _atomic_write_json(mailboxes_cache_path, cache_doc, 0o600)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

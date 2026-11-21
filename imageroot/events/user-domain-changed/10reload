@@ -30,7 +30,7 @@ def main() -> None:
     before = read_bytes_safe(ldap_env_path)
 
     subprocess.run(["discover-services"], check=False)
-    subprocess.run(["sync-mailboxes-cache"], check=False)
+    subprocess.run(["sync-mailboxes-cache", "--skip-imapsync"], check=False)
 
     after = read_bytes_safe(ldap_env_path)
     if after and after != before:

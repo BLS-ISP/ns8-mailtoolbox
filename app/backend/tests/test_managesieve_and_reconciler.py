@@ -311,3 +311,67 @@ def test_managesieve_starttls_upgrade(tmp_path: Path) -> None:
             assert scripts == ["sogo"]
             assert active == "sogo"
         assert tls_srv.tls_upgraded_connections == 1
+
+
+def test_reconciler_loop_throttles_sieve_reconcile_while_running_60s_local_checks(
+    toolbox_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    from typing import Any
+    import app.backend.reconciler as rec_mod
+
+    counts = {"sieve": 0, "digest": 0, "connectors": 0, "imapsync": 0}
+    fake_clock = {"t": 1000.0}
+    waits: list[float] = []
+
+    monkeypatch.setattr(rec_mod, "run_reconcile_pass", lambda: counts.__setitem__("sieve", counts["sieve"] + 1))
+    monkeypatch.setattr(
+        rec_mod, "check_and_run_scheduled_digest", lambda: counts.__setitem__("digest", counts["digest"] + 1)
+    )
+    monkeypatch.setattr(
+        rec_mod, "sync_due_connectors", lambda: counts.__setitem__("connectors", counts["connectors"] + 1)
+    )
+    monkeypatch.setattr(
+        rec_mod, "check_imapsync_bridge_alerts", lambda: counts.__setitem__("imapsync", counts["imapsync"] + 1)
+    )
+    monkeypatch.setattr(rec_mod.time, "monotonic", lambda: fake_clock["t"])
+
+    stop_event = asyncio.Event()
+
+    async def _fake_wait_for(coro: Any, timeout: float) -> Any:
+        coro.close()
+        waits.append(timeout)
+        if len(waits) > 5:
+            stop_event.set()
+            return True
+        fake_clock["t"] += timeout
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(rec_mod.asyncio, "wait_for", _fake_wait_for)
+
+    # 1. Default 300s Sieve interval -> five 60s ticks run local checks 5x, Sieve reconcile 1x!
+    monkeypatch.setenv("RECONCILE_INTERVAL_SECONDS", "300")
+    asyncio.run(rec_mod.reconciler_loop(stop_event))
+    assert waits[:5] == [60.0, 60.0, 60.0, 60.0, 60.0]
+    assert counts == {"sieve": 1, "digest": 5, "connectors": 5, "imapsync": 5}
+
+    # 2. Small 5s test override -> every 5s tick runs Sieve reconcile!
+    counts = {"sieve": 0, "digest": 0, "connectors": 0, "imapsync": 0}
+    waits.clear()
+    stop_event2 = asyncio.Event()
+
+    async def _fake_wait_for_fast(coro: Any, timeout: float) -> Any:
+        coro.close()
+        waits.append(timeout)
+        if len(waits) > 2:
+            stop_event2.set()
+            return True
+        fake_clock["t"] += timeout
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(rec_mod.asyncio, "wait_for", _fake_wait_for_fast)
+    monkeypatch.setenv("RECONCILE_INTERVAL_SECONDS", "5")
+    asyncio.run(rec_mod.reconciler_loop(stop_event2))
+    assert waits[:2] == [5.0, 5.0]
+    assert counts == {"sieve": 2, "digest": 2, "connectors": 2, "imapsync": 2}

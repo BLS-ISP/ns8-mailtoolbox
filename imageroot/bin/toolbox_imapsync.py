@@ -18,6 +18,7 @@ except ImportError:
 
 
 _IMAPSYNC_ID_RE = re.compile(r"^imapsync(\d+)$")
+_HIDDEN_TASK_EXTRA = {"isNotificationHidden": True}
 
 
 def _iso_now() -> str:
@@ -78,7 +79,6 @@ def _parse_optional_int(val: Any) -> int | None:
 
 def normalize_imapsync_task(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalize an `ns8-imapsync` `user_properties` record into the shared `imapsync_bridge` task contract."""
-    # Unwrap legacy nested `props` shape if encountered
     props = raw.get("props") if isinstance(raw.get("props"), dict) else {}
     merged = {**props, **raw}
 
@@ -191,8 +191,14 @@ def _read_module_ui_name(rdb: Any, mod_id: str, env_map: dict[str, str]) -> str:
     return _decode_str(env_map.get("UI_NAME"))
 
 
-def discover_imapsync_bridge(mail_module_uuid: str = "") -> dict[str, Any]:
-    """Discover installed `ns8-imapsync` instances in Redis and opportunistically load their tasks."""
+def discover_imapsync_bridge(
+    mail_module_uuid: str = "",
+    *,
+    fetch_tasks: bool = True,
+    only_coupled: bool = True,
+    cached_bridge: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Discover installed `ns8-imapsync` instances in Redis and optionally load tasks silently."""
     updated_at = _iso_now()
     if agent is None:
         return {
@@ -247,6 +253,12 @@ def discover_imapsync_bridge(mail_module_uuid: str = "") -> dict[str, Any]:
             "instances": [],
         }
 
+    cached_by_id: dict[str, dict[str, Any]] = {}
+    if isinstance(cached_bridge, dict):
+        for c_inst in cached_bridge.get("instances", []) or []:
+            if isinstance(c_inst, dict) and c_inst.get("module_id"):
+                cached_by_id[str(c_inst["module_id"])] = c_inst
+
     def _sort_key(mid: str) -> tuple[int, str]:
         m = _IMAPSYNC_ID_RE.match(mid)
         return (int(m.group(1)) if m else 999999, mid)
@@ -271,11 +283,17 @@ def discover_imapsync_bridge(mail_module_uuid: str = "") -> dict[str, Any]:
 
         tasks_loaded = False
         tasks: list[dict[str, Any]] = []
-        if inst_mail_server:
+        should_query_tasks = (
+            fetch_tasks
+            and bool(inst_mail_server)
+            and (not only_coupled or coupled)
+        )
+        if should_query_tasks:
             try:
                 res = agent.tasks.run(
                     agent_id=f"module/{mod_id}",
                     action="list-tasks",
+                    extra=_HIDDEN_TASK_EXTRA,
                 )
                 if isinstance(res, dict) and res.get("exit_code") == 0:
                     payload = _parse_task_output(res)
@@ -301,6 +319,12 @@ def discover_imapsync_bridge(mail_module_uuid: str = "") -> dict[str, Any]:
                     f"Info: Opportunistic list-tasks on module/{mod_id} deferred to Cockpit UI: {exc}",
                     file=sys.stderr,
                 )
+
+        if not tasks_loaded and mod_id in cached_by_id:
+            prev = cached_by_id[mod_id]
+            if prev.get("tasks_loaded") and isinstance(prev.get("tasks"), list):
+                tasks_loaded = True
+                tasks = prev["tasks"]
 
         instances.append(
             {

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime, timezone
 import logging
+import time
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -266,11 +267,12 @@ def run_reconcile_pass(today_override: date | None = None) -> dict[str, int]:
     }
 
 
-def _run_background_tick() -> None:
-    try:
-        run_reconcile_pass()
-    except Exception as exc:
-        logger.exception("Sieve reconcile pass failed: %s", exc)
+def _run_background_tick(*, run_sieve: bool = True) -> None:
+    if run_sieve:
+        try:
+            run_reconcile_pass()
+        except Exception as exc:
+            logger.exception("Sieve reconcile pass failed: %s", exc)
     try:
         check_and_run_scheduled_digest()
     except Exception as exc:
@@ -286,13 +288,20 @@ def _run_background_tick() -> None:
 
 
 async def reconciler_loop(stop_event: asyncio.Event) -> None:
-    """Background asyncio loop executing Sieve reconcile, digest schedule, and connectors."""
+    """Background asyncio loop throttling network Sieve/IMAP reconcile vs 60s local SQLite ticks."""
+    last_sieve_mono = time.monotonic()
     while not stop_event.is_set():
-        interval = max(5, min(60, get_settings().reconcile_interval_seconds))
+        reconcile_interval = max(5, get_settings().reconcile_interval_seconds)
+        tick_interval = max(5, min(60, reconcile_interval))
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=float(interval))
+            await asyncio.wait_for(stop_event.wait(), timeout=float(tick_interval))
             break
         except asyncio.TimeoutError:
             pass
 
-        await asyncio.to_thread(_run_background_tick)
+        now_mono = time.monotonic()
+        due_for_sieve = (now_mono - last_sieve_mono) >= (float(reconcile_interval) - 0.05)
+        if due_for_sieve:
+            last_sieve_mono = now_mono
+
+        await asyncio.to_thread(_run_background_tick, run_sieve=due_for_sieve)

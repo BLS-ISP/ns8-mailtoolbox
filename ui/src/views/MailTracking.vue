@@ -895,6 +895,7 @@ export default {
           extra: {
             title: this.$t("action." + taskAction),
             description: item.subject || item.sender,
+            isNotificationHidden: true,
             eventId,
           },
         })
@@ -941,6 +942,7 @@ export default {
           extra: {
             title: this.$t("action." + taskAction),
             description: this.$t("common.processing"),
+            isNotificationHidden: true,
             eventId,
           },
         })
@@ -979,6 +981,7 @@ export default {
           extra: {
             title: this.$t("action." + taskAction),
             description: al.sender_email,
+            isNotificationHidden: true,
             eventId,
           },
         })

@@ -60,6 +60,7 @@ def main() -> int:
             agent_id=traefik_id,
             action="delete-route",
             data={"instance": module_id},
+            extra={"isNotificationHidden": True},
         )
 
     # 4. Unbind user domains

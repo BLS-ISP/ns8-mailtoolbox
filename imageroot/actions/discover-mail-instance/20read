@@ -19,10 +19,13 @@ import agent  # noqa: E402
 from toolbox_discovery import (  # noqa: E402
     discover_available_mail_servers,
     discover_domain_groups_and_schema,
+    load_discovery_cache,
+    save_discovery_cache,
 )
 
 
 def main() -> int:
+    state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
     requested_uuid = ""
     try:
         raw = sys.stdin.read().strip()
@@ -44,7 +47,22 @@ def main() -> int:
     servers: list[dict[str, Any]] = []
     try:
         rdb = agent.redis_connect(use_replica=True)
-        servers = discover_available_mail_servers(rdb, current_node_id)
+        servers = discover_available_mail_servers(
+            rdb,
+            current_node_id,
+            fetch_rspamd=True,
+        )
+        if servers:
+            existing_cache = load_discovery_cache(state_dir, ttl_seconds=3600)
+            merged_cache = {
+                **existing_cache,
+                **{
+                    str(s["module_id"]): str(s["rspamd_url"])
+                    for s in servers
+                    if s.get("module_id") and s.get("rspamd_url")
+                },
+            }
+            save_discovery_cache(state_dir, merged_cache)
     except Exception as exc:
         print(f"Warning: Failed to list mail servers in discover-mail-instance: {exc}", file=sys.stderr)
 

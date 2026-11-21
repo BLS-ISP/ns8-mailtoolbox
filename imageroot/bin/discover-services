@@ -204,6 +204,7 @@ def main() -> int:
             creds_res = agent.tasks.run(
                 agent_id=f"module/{mail_module_id}",
                 action="reveal-master-credentials",
+                extra={"isNotificationHidden": True},
             )
             if creds_res.get("exit_code") == 0:
                 creds_data = _parse_task_output(creds_res)

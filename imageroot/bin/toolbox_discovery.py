@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 
-"""Shared NS8 mail-server Rspamd auto-discovery and live AD/OpenLDAP group discovery helpers."""
+"""Shared NS8 mail-server Rspamd auto-discovery (with TTL caching) and live AD/OpenLDAP group discovery helpers."""
 
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
+from pathlib import Path
 from typing import Any
 
 import agent
@@ -23,6 +26,8 @@ except ImportError:
     Connection = None  # type: ignore[assignment]
     NONE = None  # type: ignore[assignment]
     Server = None  # type: ignore[assignment]
+
+_HIDDEN_TASK_EXTRA = {"isNotificationHidden": True}
 
 # Built-in Active Directory / Windows Server plumbing groups hidden by default in UI
 # (Note: Domain Admins, Domain Users, Administrators, and all custom groups remain is_system=False)
@@ -103,6 +108,59 @@ def normalize_rspamd_url(raw_url: str | None) -> str:
     return cleaned
 
 
+def load_discovery_cache(state_dir: Path, ttl_seconds: int = 3600) -> dict[str, str]:
+    """Load cached `mail_module_id -> rspamd_url` map from `./config/discovery_cache.json` if within TTL."""
+    cache_path = state_dir / "config" / "discovery_cache.json"
+    if not cache_path.is_file():
+        return {}
+    try:
+        if ttl_seconds > 0 and (time.time() - cache_path.stat().st_mtime) >= ttl_seconds:
+            return {}
+        doc = json.loads(cache_path.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict):
+            return {}
+        raw_map = doc.get("rspamd_urls")
+        if not isinstance(raw_map, dict):
+            return {}
+        return {
+            str(k).strip(): normalize_rspamd_url(v)
+            for k, v in raw_map.items()
+            if str(k).strip() and normalize_rspamd_url(v)
+        }
+    except Exception:
+        return {}
+
+
+def save_discovery_cache(state_dir: Path, rspamd_urls: dict[str, str]) -> None:
+    """Persist `mail_module_id -> rspamd_url` map atomically (`0600`) to `./config/discovery_cache.json`."""
+    cleaned = {
+        str(k).strip(): normalize_rspamd_url(v)
+        for k, v in (rspamd_urls or {}).items()
+        if str(k).strip() and normalize_rspamd_url(v)
+    }
+    if not cleaned:
+        return
+    try:
+        config_dir = state_dir / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        dest = config_dir / "discovery_cache.json"
+        tmp_path = config_dir / f".discovery_cache.json.tmp.{os.getpid()}"
+        payload = {
+            "updated_at": int(time.time()),
+            "rspamd_urls": cleaned,
+        }
+        content = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+        fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(str(tmp_path), 0o600)
+        os.replace(str(tmp_path), str(dest))
+    except Exception:
+        pass
+
+
 def _parse_task_output(result: dict[str, Any]) -> Any:
     output = result.get("output")
     if isinstance(output, (dict, list)):
@@ -117,13 +175,21 @@ def _parse_task_output(result: dict[str, Any]) -> Any:
     return {}
 
 
+def _fallback_rspamd_url_from_hostname(mail_hostname: str) -> str:
+    host = str(mail_hostname or "").strip()
+    if host and "." in host and host not in ("127.0.0.1", "localhost"):
+        return f"https://{host}/rspamd"
+    return "http://127.0.0.1:11334"
+
+
 def discover_mail_rspamd_url(mail_module_id: str, mail_hostname: str = "") -> str:
-    """Query `module/<mail_id>/get-filter-configuration` for Rspamd URL with smart HTTPS fallback."""
+    """Query `module/<mail_id>/get-filter-configuration` silently for Rspamd URL with HTTPS fallback."""
     if mail_module_id:
         try:
             res = agent.tasks.run(
                 agent_id=f"module/{mail_module_id}",
                 action="get-filter-configuration",
+                extra=_HIDDEN_TASK_EXTRA,
             )
             if res.get("exit_code") == 0:
                 payload = _parse_task_output(res)
@@ -143,14 +209,17 @@ def discover_mail_rspamd_url(mail_module_id: str, mail_hostname: str = "") -> st
                 file=sys.stderr,
             )
 
-    host = str(mail_hostname or "").strip()
-    if host and "." in host and host not in ("127.0.0.1", "localhost"):
-        return f"https://{host}/rspamd"
-    return "http://127.0.0.1:11334"
+    return _fallback_rspamd_url_from_hostname(mail_hostname)
 
 
-def discover_available_mail_servers(rdb: Any, current_node_id: int) -> list[dict[str, Any]]:
-    """List coupled-candidate `ns8-mail` instances with `same_node` and auto-discovered `rspamd_url`."""
+def discover_available_mail_servers(
+    rdb: Any,
+    current_node_id: int,
+    *,
+    fetch_rspamd: bool = True,
+    cached_rspamd_urls: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """List coupled-candidate `ns8-mail` instances with `same_node` and cached/discovered `rspamd_url`."""
     imap_providers = agent.list_service_providers(rdb, "imap", "tcp") or []
     sub_providers = agent.list_service_providers(rdb, "submission", "tcp") or []
     sub_by_uuid = {
@@ -158,6 +227,7 @@ def discover_available_mail_servers(rdb: Any, current_node_id: int) -> list[dict
         for p in sub_providers
         if isinstance(p, dict) and p.get("module_uuid")
     }
+    url_cache = cached_rspamd_urls or {}
 
     servers: list[dict[str, Any]] = []
     seen_uuids: set[str] = set()
@@ -185,7 +255,13 @@ def discover_available_mail_servers(rdb: Any, current_node_id: int) -> list[dict
         except (TypeError, ValueError):
             node_id = 0
         same_node = bool(current_node_id and node_id == current_node_id)
-        rspamd_url = discover_mail_rspamd_url(module_id, mail_hostname)
+
+        if module_id and url_cache.get(module_id):
+            rspamd_url = url_cache[module_id]
+        elif fetch_rspamd:
+            rspamd_url = discover_mail_rspamd_url(module_id, mail_hostname)
+        else:
+            rspamd_url = _fallback_rspamd_url_from_hostname(mail_hostname)
 
         servers.append(
             {
@@ -269,7 +345,6 @@ def _query_groups_via_ldap3(domain_info: dict[str, Any]) -> list[dict[str, Any]]
         receive_timeout=10,
     )
     try:
-        # 1. Fetch users to map DN/uid -> user and count AD primaryGroupID & RFC2307 primary gidNumber
         primary_rid_counts: dict[int, set[str]] = {}
         primary_gid_counts: dict[str, set[str]] = {}
         user_dns_lower: set[str] = set()
@@ -303,7 +378,6 @@ def _query_groups_via_ldap3(domain_info: dict[str, Any]) -> list[dict[str, Any]]
             if gid_raw:
                 primary_gid_counts.setdefault(gid_raw, set()).add(uid_key)
 
-        # 2. Fetch all groups
         conn.search(
             search_base=base_dn,
             search_filter="(|(objectClass=group)(objectClass=posixGroup)(objectClass=groupOfNames)(objectClass=groupOfUniqueNames))",
@@ -320,7 +394,6 @@ def _query_groups_via_ldap3(domain_info: dict[str, Any]) -> list[dict[str, Any]]
             ],
         )
 
-        # Build group structure for direct + nested member counting
         group_entries: dict[str, dict[str, Any]] = {}
         for entry in conn.response or []:
             if entry.get("type") != "searchResEntry":
@@ -449,13 +522,13 @@ def discover_domain_groups_and_schema(
             except Exception as exc:
                 print(f"Warning: Ldapclient.list_groups failed: {exc}", file=sys.stderr)
 
-    # Fallback when ldapproxy is not yet bound on this node for a cross-node mailX instance:
-    # query `module/<mail_id>/list-acl-subjects` (authorized via `mail@any:mailadm` "list-*").
+    # Fallback when ldapproxy is not yet bound on this node for a cross-node mailX instance
     if mail_module_id:
         try:
             acl_res = agent.tasks.run(
                 agent_id=f"module/{mail_module_id}",
                 action="list-acl-subjects",
+                extra=_HIDDEN_TASK_EXTRA,
             )
             if acl_res.get("exit_code") == 0:
                 payload = _parse_task_output(acl_res)

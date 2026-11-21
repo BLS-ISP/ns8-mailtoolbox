@@ -609,6 +609,7 @@ export default {
           extra: {
             title: this.$t("action." + taskAction),
             description: row.name,
+            isNotificationHidden: true,
             eventId,
           },
         })

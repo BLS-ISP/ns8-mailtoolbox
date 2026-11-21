@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
-"""List external POP3/IMAP mail connectors via GET /api/internal/connectors merged with live NS8 IMAP-Sync bridge discovery."""
+"""List external POP3/IMAP mail connectors via GET /api/internal/connectors merged with cached/live NS8 IMAP-Sync bridge discovery."""
 
 from __future__ import annotations
 
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -17,6 +18,34 @@ if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
 from toolbox_imapsync import discover_imapsync_bridge  # noqa: E402
+
+IMAPSYNC_CACHE_TTL_SECONDS = 300
+
+
+def _read_force_refresh_flag() -> bool:
+    try:
+        raw = sys.stdin.read().strip()
+        if raw:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return bool(parsed.get("force_refresh", False))
+    except Exception:
+        pass
+    return False
+
+
+def _load_imapsync_cache_file(state_dir: Path) -> tuple[dict[str, Any] | None, bool]:
+    cache_path = state_dir / "config" / "imapsync_cache.json"
+    if not cache_path.is_file():
+        return None, False
+    try:
+        age = time.time() - cache_path.stat().st_mtime
+        parsed = json.loads(cache_path.read_text(encoding="utf-8"))
+        if isinstance(parsed, dict):
+            return parsed, (age < IMAPSYNC_CACHE_TTL_SECONDS)
+    except Exception:
+        pass
+    return None, False
 
 
 def _persist_imapsync_cache(state_dir: Path, bridge_doc: dict[str, Any]) -> None:
@@ -73,14 +102,53 @@ def _merge_bridge_data(
 
 
 def main() -> int:
+    force_refresh = _read_force_refresh_flag()
     mail_module_uuid = os.environ.get("MAIL_MODULE_UUID", "").strip()
     web_tcp_port = os.environ.get("WEB_TCP_PORT", "").strip()
     state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
     token_path = state_dir / "config" / "internal.token"
 
-    # Always discover installed ns8-imapsync instances even before mail-toolbox is configured
-    live_bridge = discover_imapsync_bridge(mail_module_uuid)
-    _persist_imapsync_cache(state_dir, live_bridge)
+    cached_file_bridge, cache_fresh = _load_imapsync_cache_file(state_dir)
+
+    # Pure local Redis topology check (0 NS8 tasks)
+    live_topology = discover_imapsync_bridge(
+        mail_module_uuid,
+        fetch_tasks=False,
+        only_coupled=True,
+    )
+    cached_known_ids = {
+        str(c.get("module_id"))
+        for c in ((cached_file_bridge or {}).get("instances") or [])
+        if isinstance(c, dict) and c.get("module_id")
+    }
+    coupled_ready_ids = [
+        str(inst.get("module_id"))
+        for inst in (live_topology.get("instances") or [])
+        if isinstance(inst, dict) and inst.get("coupled") and inst.get("mail_server")
+    ]
+
+    need_live_fetch = bool(coupled_ready_ids) and (
+        force_refresh
+        or not cache_fresh
+        or any(mid not in cached_known_ids for mid in coupled_ready_ids)
+    )
+
+    if need_live_fetch:
+        live_bridge = discover_imapsync_bridge(
+            mail_module_uuid,
+            fetch_tasks=True,
+            only_coupled=True,
+            cached_bridge=cached_file_bridge,
+        )
+        _persist_imapsync_cache(state_dir, live_bridge)
+    else:
+        live_bridge = (
+            _merge_bridge_data(live_topology, cached_file_bridge)
+            if live_topology.get("instances")
+            else live_topology
+        )
+        if cached_file_bridge is None or force_refresh or not cache_fresh:
+            _persist_imapsync_cache(state_dir, live_bridge)
 
     if not mail_module_uuid or not web_tcp_port or not token_path.is_file():
         json.dump(
@@ -106,9 +174,13 @@ def main() -> int:
         with urllib.request.urlopen(req, timeout=20) as resp:
             backend_data = json.loads(resp.read().decode("utf-8"))
             if isinstance(backend_data, dict):
-                backend_data["imapsync_bridge"] = _merge_bridge_data(
-                    live_bridge,
-                    backend_data.get("imapsync_bridge"),
+                backend_data["imapsync_bridge"] = (
+                    _merge_bridge_data(
+                        live_bridge,
+                        backend_data.get("imapsync_bridge"),
+                    )
+                    if live_bridge.get("instances")
+                    else live_bridge
                 )
             json.dump(backend_data, sys.stdout)
     except urllib.error.HTTPError as exc:

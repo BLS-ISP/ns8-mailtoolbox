@@ -18,7 +18,9 @@ import agent  # noqa: E402
 from toolbox_discovery import (  # noqa: E402
     discover_available_mail_servers,
     discover_domain_groups_and_schema,
+    load_discovery_cache,
     normalize_rspamd_url,
+    save_discovery_cache,
 )
 
 
@@ -112,10 +114,32 @@ def main() -> int:
 
     milter_bind_host = os.environ.get("MILTER_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
 
+    saved_rspamd_url = normalize_rspamd_url(
+        saved_settings.get("rspamd_url") or os.environ.get("RSPAMD_URL")
+    )
+    cached_urls = load_discovery_cache(state_dir, ttl_seconds=3600)
+    if configured and mail_module_id and saved_rspamd_url:
+        cached_urls.setdefault(mail_module_id, saved_rspamd_url)
+    should_fetch_rspamd = (not configured) and (not cached_urls)
+
     available_mail_servers: list[dict[str, Any]] = []
     try:
         rdb = agent.redis_connect(use_replica=True)
-        available_mail_servers = discover_available_mail_servers(rdb, current_node_id)
+        available_mail_servers = discover_available_mail_servers(
+            rdb,
+            current_node_id,
+            fetch_rspamd=should_fetch_rspamd,
+            cached_rspamd_urls=cached_urls,
+        )
+        if should_fetch_rspamd and available_mail_servers:
+            save_discovery_cache(
+                state_dir,
+                {
+                    str(s["module_id"]): str(s["rspamd_url"])
+                    for s in available_mail_servers
+                    if s.get("module_id") and s.get("rspamd_url")
+                },
+            )
     except Exception as exc:
         print(f"Warning: Failed to list mail service providers: {exc}", file=sys.stderr)
 
@@ -151,9 +175,6 @@ def main() -> int:
         default=True,
     )
 
-    saved_rspamd_url = normalize_rspamd_url(
-        saved_settings.get("rspamd_url") or os.environ.get("RSPAMD_URL")
-    )
     rspamd_url = saved_rspamd_url or discovered_rspamd_url or "http://127.0.0.1:11334"
     rspamd_user = str(
         saved_settings.get("rspamd_user", os.environ.get("RSPAMD_USER", ""))

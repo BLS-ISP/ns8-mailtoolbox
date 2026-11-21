@@ -630,9 +630,13 @@ export default {
       payloadData,
       extra
     ) {
+      const mergedExtra = {
+        isNotificationHidden: true,
+        ...(extra || {}),
+      };
       const taskSpec = payloadData
-        ? { action: externalAction, data: payloadData, extra }
-        : { action: externalAction, extra };
+        ? { action: externalAction, data: payloadData, extra: mergedExtra }
+        : { action: externalAction, extra: mergedExtra };
       return this.createModuleTaskForApp(targetModuleId, taskSpec);
     },
     formatInstanceBadge(inst) {
@@ -648,7 +652,7 @@ export default {
     },
     onToggleUncoupledImapsync() {
       if (this.showUncoupledImapsync) {
-        this.refreshMissingImapsyncTasks(false);
+        this.refreshMissingImapsyncTasks();
       }
     },
     formatImapsyncScheduleLabel(schedule) {
@@ -711,11 +715,11 @@ export default {
       }
       return this.$t("connectors.status_pending");
     },
-    reloadAll(forceLiveImapsync = false) {
-      this.listConnectors(forceLiveImapsync);
+    reloadAll(forceRefresh = false) {
+      this.listConnectors(forceRefresh === true);
       this.listMailboxes();
     },
-    async listConnectors(forceLiveImapsync = false) {
+    async listConnectors(forceRefresh = false) {
       this.loading.listConnectors = true;
       this.error.listConnectors = "";
       const taskAction = "list-connectors";
@@ -743,7 +747,7 @@ export default {
                 tasks: Array.isArray(inst.tasks) ? inst.tasks : [],
               })
             );
-            this.refreshMissingImapsyncTasks(forceLiveImapsync);
+            this.refreshMissingImapsyncTasks();
           } else if (
             !out.imapsync_bridge ||
             out.imapsync_bridge.installed === undefined
@@ -758,6 +762,7 @@ export default {
       const res = await to(
         this.createModuleTaskForApp(this.instanceName, {
           action: "list-connectors",
+          ...(forceRefresh === true ? { data: { force_refresh: true } } : {}),
           extra: {
             title: this.$t("action." + taskAction),
             isNotificationHidden: true,
@@ -784,7 +789,7 @@ export default {
           );
           if (discovered.length > 0) {
             this.imapsyncInstances = discovered;
-            this.refreshMissingImapsyncTasks(true);
+            this.refreshMissingImapsyncTasks();
           }
         }
       );
@@ -800,9 +805,11 @@ export default {
         })
       );
     },
-    refreshMissingImapsyncTasks(forceAll = false) {
-      const targets = this.activeImapsyncInstances.filter(
-        (inst) => forceAll || !inst.tasks_loaded
+    refreshMissingImapsyncTasks() {
+      const targets = this.imapsyncInstances.filter(
+        (inst) =>
+          !inst.tasks_loaded &&
+          (Boolean(inst.coupled) || this.showUncoupledImapsync)
       );
       for (const inst of targets) {
         this.fetchImapsyncInstanceTasks(inst.module_id);
@@ -1027,6 +1034,7 @@ export default {
           extra: {
             title: this.$t("action." + taskAction),
             description: row.name,
+            isNotificationHidden: true,
             eventId,
           },
         })
@@ -1068,6 +1076,7 @@ export default {
           extra: {
             title: this.$t("action." + taskAction),
             description: row.name,
+            isNotificationHidden: true,
             eventId,
           },
         })

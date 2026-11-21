@@ -19,7 +19,9 @@ import agent  # noqa: E402
 import agent.tasks  # noqa: E402
 from toolbox_discovery import (  # noqa: E402
     discover_mail_rspamd_url,
+    load_discovery_cache,
     normalize_rspamd_url,
+    save_discovery_cache,
 )
 
 
@@ -149,12 +151,17 @@ def main() -> int:
     agent.assert_exp(bool(mail_module_id), "Resolved mail_module_id is empty")
     agent.assert_exp(bool(user_domain), "Resolved user_domain is empty")
 
-    discovered_rspamd_url = discover_mail_rspamd_url(mail_module_id, mail_hostname)
-
+    cached_urls = load_discovery_cache(state_dir, ttl_seconds=3600)
     incoming_rspamd_url = normalize_rspamd_url(data.get("rspamd_url")) if "rspamd_url" in data else ""
     saved_rspamd_url = normalize_rspamd_url(
         existing_settings.get("rspamd_url") or os.environ.get("RSPAMD_URL")
     )
+    discovered_rspamd_url = cached_urls.get(mail_module_id) or ""
+    if not incoming_rspamd_url and not saved_rspamd_url and not discovered_rspamd_url:
+        discovered_rspamd_url = discover_mail_rspamd_url(mail_module_id, mail_hostname)
+    if discovered_rspamd_url and mail_module_id:
+        save_discovery_cache(state_dir, {**cached_urls, mail_module_id: discovered_rspamd_url})
+
     rspamd_url = (
         incoming_rspamd_url
         or saved_rspamd_url
@@ -277,6 +284,7 @@ def main() -> int:
                 "lets_encrypt": lets_encrypt,
                 "http2https": http2https,
             },
+            extra={"isNotificationHidden": True},
         )
         agent.assert_exp(route_res.get("exit_code") == 0, "Failed to configure Traefik HTTP route")
     elif previous_portal_hostname and traefik_id:
@@ -284,6 +292,7 @@ def main() -> int:
             agent_id=traefik_id,
             action="delete-route",
             data={"instance": os.environ["MODULE_ID"]},
+            extra={"isNotificationHidden": True},
         )
 
     child_env = os.environ.copy()

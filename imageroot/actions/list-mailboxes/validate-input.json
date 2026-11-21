@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "list-mailboxes input",
+  "$id": "http://nethserver.org/json-schema/task/input/mail-toolbox/list-mailboxes",
+  "description": "Optional parameters for listing mailboxes with smart cache TTL control",
+  "type": ["object", "null"],
+  "additionalProperties": true,
+  "properties": {
+    "force_refresh": {
+      "type": ["boolean", "null"]
+    }
+  }
+}

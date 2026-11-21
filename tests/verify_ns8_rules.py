@@ -456,6 +456,109 @@ def test_systemd_units_pull_missing_and_localhost_binding():
             f"{path.relative_to(ROOT_DIR)} must NEVER set MILTER_BIND_HOST to 0.0.0.0"
         )
 
+    # Verify v1.0.5 60-minute sync timer schedule and in-place upgrade timer restart
+    timer_text = sync_timer.read_text(encoding="utf-8")
+    assert re.search(r"^OnUnitActiveSec=60min\s*$", timer_text, flags=re.MULTILINE), (
+        "imageroot/systemd/user/mail-toolbox-sync.timer must set `OnUnitActiveSec=60min`"
+    )
+    assert "10min" not in timer_text, (
+        "imageroot/systemd/user/mail-toolbox-sync.timer must not use legacy `10min` interval"
+    )
+
+    update_restart = IMAGEROOT_DIR / "update-module.d" / "20restart"
+    assert update_restart.is_file(), "Missing imageroot/update-module.d/20restart"
+    update_restart_text = update_restart.read_text(encoding="utf-8")
+    assert re.search(
+        r"systemctl\s+--user\s+restart\s+mail-toolbox-sync\.timer\b",
+        update_restart_text,
+    ), "imageroot/update-module.d/20restart must restart `mail-toolbox-sync.timer` on module upgrades"
+    assert "--min-age" in update_restart_text and "--skip-imapsync" in update_restart_text, (
+        "imageroot/update-module.d/20restart must invoke `sync-mailboxes-cache` with `--min-age` and `--skip-imapsync`"
+    )
+
+
+def _eval_bool_dict_expr(expr: ast.AST, const_dicts: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """Resolve a literal `{...}` or module-level constant name to a Python dict for AST inspection."""
+    if isinstance(expr, ast.Name):
+        return const_dicts.get(expr.id)
+    if isinstance(expr, ast.Dict):
+        out: dict[str, Any] = {}
+        for k_node, v_node in zip(expr.keys, expr.values):
+            if k_node is None and isinstance(v_node, ast.Name) and v_node.id in const_dicts:
+                out.update(const_dicts[v_node.id])
+            elif isinstance(k_node, ast.Constant) and isinstance(k_node.value, str):
+                if isinstance(v_node, ast.Constant):
+                    out[k_node.value] = v_node.value
+                else:
+                    out[k_node.value] = None
+        return out
+    return None
+
+
+def test_all_imageroot_agent_tasks_run_hide_notifications():
+    """v1.0.5 Guard: 100% of `agent.tasks.run(...)` calls across `imageroot/**` MUST pass `extra={'isNotificationHidden': True}`."""
+    total_calls = 0
+    violations: list[str] = []
+
+    for file_path in _iter_files(IMAGEROOT_DIR):
+        if file_path.suffix == ".json":
+            continue
+        text = file_path.read_text(encoding="utf-8", errors="replace")
+        first_line = text.splitlines()[0] if text.splitlines() else ""
+        is_python = file_path.suffix == ".py" or "python" in first_line
+        if not is_python:
+            if "tasks.run" in text:
+                violations.append(
+                    f"{file_path.relative_to(ROOT_DIR)}: non-Python script invokes `tasks.run`"
+                )
+            continue
+
+        rel = file_path.relative_to(ROOT_DIR)
+        tree = ast.parse(text, filename=str(rel))
+
+        const_dicts: dict[str, dict[str, Any]] = {}
+        for stmt in tree.body:
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                parsed = _eval_bool_dict_expr(stmt.value, const_dicts)
+                if parsed is not None:
+                    const_dicts[stmt.targets[0].id] = parsed
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
+                parsed = _eval_bool_dict_expr(stmt.value, const_dicts)
+                if parsed is not None:
+                    const_dicts[stmt.target.id] = parsed
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            is_agent_tasks_run = (
+                isinstance(func, ast.Attribute)
+                and func.attr == "run"
+                and isinstance(func.value, ast.Attribute)
+                and func.value.attr == "tasks"
+            )
+            if not is_agent_tasks_run:
+                continue
+
+            total_calls += 1
+            extra_kw = next((kw for kw in node.keywords if kw.arg == "extra"), None)
+            if extra_kw is None:
+                violations.append(f"{rel}:{node.lineno} calls `agent.tasks.run(...)` without `extra=...`")
+                continue
+
+            resolved_extra = _eval_bool_dict_expr(extra_kw.value, const_dicts)
+            if not resolved_extra or resolved_extra.get("isNotificationHidden") is not True:
+                violations.append(
+                    f"{rel}:{node.lineno} calls `agent.tasks.run(...)` without `extra={{'isNotificationHidden': True}}` "
+                    f"(got `{ast.unparse(extra_kw.value)}`)"
+                )
+
+    assert total_calls >= 11, f"Expected at least 11 `agent.tasks.run` calls across imageroot/, found {total_calls}"
+    assert not violations, (
+        "NS8 Notification Flood Violation — every `agent.tasks.run(...)` in imageroot/ MUST pass `extra={'isNotificationHidden': True}`:\n  - "
+        + "\n  - ".join(violations)
+    )
+
 
 def test_build_images_sh_labels_and_permissions():
     """Verify `build-images.sh` NS8 labels, LF stripping (`\\r`), and executable bit (`chmod +x`)."""
@@ -670,6 +773,81 @@ def test_ui_never_calls_create_success_notification_for_app():
     assert not bad_error_notif_calls, (
         "NS8 UI Violation: `createErrorNotificationForApp(err, message)` requires 2 arguments:\n  - "
         + "\n  - ".join(bad_error_notif_calls)
+    )
+
+
+def _extract_balanced_parens(source: str, open_paren_pos: int) -> str:
+    """Return balanced `(...)` slice starting at `open_paren_pos`."""
+    depth = 0
+    pos = open_paren_pos
+    while pos < len(source):
+        ch = source[pos]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                return source[open_paren_pos : pos + 1]
+        elif ch in "\"'`":
+            quote = ch
+            pos += 1
+            while pos < len(source) and source[pos] != quote:
+                if source[pos] == "\\":
+                    pos += 1
+                pos += 1
+        pos += 1
+    return source[open_paren_pos:]
+
+
+def test_ui_tasks_set_is_notification_hidden():
+    """v1.0.5 Guard: Every `createModuleTaskForApp` / `createClusterTaskForApp` call in `ui/src/**` except `configure-module` MUST set `isNotificationHidden: true`."""
+    ui_src = UI_DIR / "src"
+    source_files = [p for p in _iter_files(ui_src) if p.suffix in {".vue", ".js", ".ts"}]
+    assert source_files, "No Vue/JS files found under ui/src/"
+
+    total_task_calls = 0
+    visible_configure_calls = 0
+    violations: list[str] = []
+
+    for path in source_files:
+        rel = path.relative_to(ROOT_DIR)
+        raw_text = path.read_text(encoding="utf-8")
+        _, script = (
+            _extract_vue_sections(raw_text)
+            if path.suffix == ".vue"
+            else ("", _strip_js_comments(raw_text))
+        )
+
+        for match in re.finditer(r"create(?:Module|Cluster)TaskForApp\s*(?=\()", script):
+            total_task_calls += 1
+            call_args = _extract_balanced_parens(script, match.end())
+            lineno = script[: match.start()].count("\n") + 1
+
+            # Check `runExternalImapsyncTask` helper delegating `taskSpec` / `mergedExtra`
+            if re.search(r"^\(\s*targetModuleId\s*,\s*taskSpec\s*\)$", call_args):
+                context_before = script[max(0, match.start() - 450) : match.start()]
+                if not re.search(r"isNotificationHidden\s*:\s*true\b", context_before):
+                    violations.append(
+                        f"{rel}:{lineno}: `runExternalImapsyncTask` wrapper does not enforce `isNotificationHidden: true`"
+                    )
+                continue
+
+            if re.search(r"\baction\s*:\s*['\"]configure-module['\"]", call_args):
+                visible_configure_calls += 1
+                continue
+
+            if not re.search(r"\bisNotificationHidden\s*:\s*true\b", call_args):
+                violations.append(
+                    f"{rel}:{lineno}: `{match.group(0).strip()}` missing `isNotificationHidden: true` in `extra`"
+                )
+
+    assert total_task_calls >= 29, f"Expected >=29 task calls in ui/src/**, found {total_task_calls}"
+    assert visible_configure_calls == 1, (
+        f"Expected exactly 1 visible `configure-module` task call in Settings.vue, found {visible_configure_calls}"
+    )
+    assert not violations, (
+        "Cockpit UI Notification Toast Violation — all tasks except `configure-module` must set `isNotificationHidden: true`:\n  - "
+        + "\n  - ".join(violations)
     )
 
 
@@ -1696,7 +1874,14 @@ def test_jsonschema_ui_inputs_and_live_backend_outputs(
             "remote_password": "secret",
         },
         "sync-connector-now": {"id": 1},
+        "list-mailboxes": {"force_refresh": True},
+        "list-connectors": {"force_refresh": True},
     }
+
+    # Check every validate-input.json / validate-output.json in imageroot/actions/ is valid Draft-07 JSON Schema
+    for schema_file in sorted(ACTIONS_DIR.glob("*/validate-*.json")):
+        schema_doc = json.loads(schema_file.read_text(encoding="utf-8"))
+        jsonschema.Draft7Validator.check_schema(schema_doc)
 
     for action_name, payload in ui_payloads.items():
         schema_path = ACTIONS_DIR / action_name / "validate-input.json"
@@ -1704,6 +1889,14 @@ def test_jsonschema_ui_inputs_and_live_backend_outputs(
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         jsonschema.Draft7Validator.check_schema(schema)
         jsonschema.validate(instance=payload, schema=schema)
+
+    # Verify v1.0.5 `list-mailboxes` and `list-connectors` input schemas accept `null` (omitted `data:`), `{}`, and `force_refresh` booleans
+    for cacheable_read_action in ("list-mailboxes", "list-connectors"):
+        read_in_schema = json.loads(
+            (ACTIONS_DIR / cacheable_read_action / "validate-input.json").read_text(encoding="utf-8")
+        )
+        for sample_in in (None, {}, {"force_refresh": False}, {"force_refresh": True}):
+            jsonschema.validate(instance=sample_in, schema=read_in_schema)
 
     # Verify configure-module schema explicitly accepts empty `allowed_groups: []` AND Cockpit-only `portal_enabled: False, portal_hostname: ""`
     cfg_schema = json.loads((ACTIONS_DIR / "configure-module" / "validate-input.json").read_text(encoding="utf-8"))

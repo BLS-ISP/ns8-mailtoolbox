@@ -476,6 +476,7 @@ export default {
           extra: {
             title: this.$t("action." + taskAction),
             description: this.mailbox.display_name || this.mailbox.user,
+            isNotificationHidden: true,
             eventId,
           },
         })

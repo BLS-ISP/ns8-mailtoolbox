@@ -854,8 +854,8 @@ export default {
       if (this.configuration.configured === true) {
         this.listMailboxes();
         this.listSignatures();
+        this.listConnectors();
       }
-      this.listConnectors();
     },
     async listMailboxes() {
       this.loading.listMailboxes = true;
@@ -972,7 +972,7 @@ export default {
               })
             );
             for (const inst of this.imapsyncInstances) {
-              if (inst.coupled !== false && !inst.tasks_loaded) {
+              if (Boolean(inst.coupled) && !inst.tasks_loaded) {
                 this.fetchImapsyncInstanceTasks(inst.module_id);
               }
             }
@@ -1035,7 +1035,10 @@ export default {
     runExternalImapsyncTask(targetModuleId, externalAction, extra) {
       return this.createModuleTaskForApp(targetModuleId, {
         action: externalAction,
-        extra,
+        extra: {
+          isNotificationHidden: true,
+          ...(extra || {}),
+        },
       });
     },
     async fetchImapsyncInstanceTasks(imapsyncModuleId) {

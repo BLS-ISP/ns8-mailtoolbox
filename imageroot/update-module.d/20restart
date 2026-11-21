@@ -2,8 +2,8 @@
 
 #
 # Restart NS8 Mail Toolbox services after module update so newly pulled
-# runtime images (from org.nethserver.images) take effect cleanly,
-# including Cockpit-only installations where PORTAL_HOSTNAME is empty.
+# runtime images (from org.nethserver.images) and updated timer schedules
+# take effect cleanly, including Cockpit-only installations.
 #
 
 set -e
@@ -12,7 +12,8 @@ systemctl --user daemon-reload
 
 if [[ -n "${MAIL_MODULE_UUID:-}" ]]; then
     /usr/local/bin/runagent discover-services || true
-    /usr/local/bin/runagent sync-mailboxes-cache || true
+    /usr/local/bin/runagent sync-mailboxes-cache --min-age 300 --skip-imapsync || true
     systemctl --user enable --now mail-toolbox-sync.timer
+    systemctl --user restart mail-toolbox-sync.timer
     systemctl --user try-restart mail-toolbox.service
 fi

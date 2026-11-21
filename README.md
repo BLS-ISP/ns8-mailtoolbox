@@ -78,7 +78,7 @@ flowchart TB
 
 ### Update Safety with `ns8-mail`, `ns8-sogo`, and `ns8-imapsync`
 - **Zero Container Patching:** `ns8-mail-toolbox` runs in its own isolated rootless Podman user namespace and communicates exclusively via official NS8 authorizations (`traefik@node:routeadm`, `mail@any:mailadm`, `cluster:accountconsumer`, `imapsync@any:reader`), standard RFC protocols (ManageSieve, IMAP, SMTP, LDAP, HTTP, Milter), and NS8 persistent environment hooks (`POSTFIX_MILTERS`).
-- **Cluster Event Listeners:** Automatically refreshes service endpoints, mailbox/alias caches, and `ns8-imapsync` bridge state whenever `ns8-mail` emits `mail-settings-changed`, the account provider emits `user-domain-changed`, or the 10-minute sync timer fires.
+- **Cluster Event Listeners:** Automatically refreshes service endpoints, mailbox/alias caches, and `ns8-imapsync` bridge state whenever `ns8-mail` emits `mail-settings-changed`, the account provider emits `user-domain-changed`, or the 60-minute background cache sync timer fires (backed by a cache-first TTL architecture with silent internal tasks).
 
 ---
 
