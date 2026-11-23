@@ -110,7 +110,10 @@ function parseQuarantineQuery() {
     return { token: '', op: 'release' }
   }
   const params = new URLSearchParams(window.location.search || '')
-  const rawToken = (params.get('quarantine_token') || '').trim()
+  const fallbackPathToken = (window.location.pathname || '').includes('/quarantine')
+    ? params.get('token') || ''
+    : ''
+  const rawToken = (params.get('quarantine_token') || fallbackPathToken).trim()
   const rawOp = (params.get('op') || '').trim()
   const op = rawOp === 'release_and_allow' ? 'release_and_allow' : 'release'
   return { token: rawToken, op }
@@ -148,9 +151,13 @@ async function exitQuarantineMode() {
   if (typeof window !== 'undefined' && window.history?.replaceState) {
     const params = new URLSearchParams(window.location.search || '')
     params.delete('quarantine_token')
+    params.delete('token')
     params.delete('op')
     const rest = params.toString()
-    const cleanUrl = `${window.location.pathname || '/'}${rest ? `?${rest}` : ''}${window.location.hash || ''}`
+    const basePath = (window.location.pathname || '/').includes('/quarantine')
+      ? '/'
+      : window.location.pathname || '/'
+    const cleanUrl = `${basePath}${rest ? `?${rest}` : ''}${window.location.hash || ''}`
     window.history.replaceState({}, '', cleanUrl)
   }
   quarantineToken.value = ''

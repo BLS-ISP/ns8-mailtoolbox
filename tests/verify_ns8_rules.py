@@ -221,7 +221,7 @@ def test_action_scripts_set_env_and_no_deprecated_dump_env():
     dump_env_violations: list[str] = []
 
     for file_path in _iter_files(IMAGEROOT_DIR):
-        if file_path.suffix == ".json":
+        if file_path.suffix in {".json", ".md"}:
             continue
         text = file_path.read_text(encoding="utf-8", errors="replace")
         rel = file_path.relative_to(ROOT_DIR)
@@ -501,7 +501,7 @@ def test_all_imageroot_agent_tasks_run_hide_notifications():
     violations: list[str] = []
 
     for file_path in _iter_files(IMAGEROOT_DIR):
-        if file_path.suffix == ".json":
+        if file_path.suffix in {".json", ".md"}:
             continue
         text = file_path.read_text(encoding="utf-8", errors="replace")
         first_line = text.splitlines()[0] if text.splitlines() else ""
@@ -601,6 +601,13 @@ def test_build_images_sh_labels_and_permissions():
     assert re.search(r"\bchmod\s+(?:-R\s+)?(?:\+x|[0-7]*7[0-7]*5)", content), (
         "build-images.sh must set executable permissions (`chmod +x`) on imageroot scripts (NS8 Rule 8)"
     )
+    assert not re.search(r"\bchmod\s+-R\s+\+x\b", content) and "README.md" not in content, (
+        "build-images.sh must scope `chmod +x` strictly to executable script directories (never `imageroot/README.md`)"
+    )
+    for expected_glob in ("actions/*/[0-9]*", "events/*/[0-9]*", "update-module.d/*", "bin/*"):
+        assert expected_glob in content, (
+            f"build-images.sh `chmod +x` missing expected target glob `{expected_glob}`"
+        )
 
 
 def test_backup_restore_clone_and_python_syntax():
@@ -645,6 +652,8 @@ def test_backup_restore_clone_and_python_syntax():
                 assert isinstance(parsed, dict) and "type" in parsed, (
                     f"{rel}: JSON schema must be an object with a root `type`"
                 )
+        elif path.suffix == ".md":
+            continue
         else:
             first_line = text.splitlines()[0] if text.splitlines() else ""
             is_exec_script = (
@@ -1448,11 +1457,68 @@ def test_release_artifacts_license_and_ns8_repo_workflow():
 
 
 def test_github_release_alignment_and_english_readme():
-    """Verify English-only README.md, BLS-ISP/ns8-mailtoolbox OCI/metadata alignment, 0 legacy owner refs, .gitignore & CI workflows."""
-    # 1. English-only README.md referencing BLS-ISP/ns8-mailtoolbox & ghcr.io/bls-isp
-    readme_path = ROOT_DIR / "README.md"
-    assert readme_path.is_file(), "Missing root `README.md`"
-    readme_text = readme_path.read_text(encoding="utf-8")
+    """Verify all 7 English-only .md docs & relative links, CHANGELOG/package.json v1.0.5 alignment, BLS-ISP OCI metadata & CI workflows."""
+    # 1. Verify all 7 required repository Markdown documentation files exist, are 100% English-only, have valid relative links, and 0 CR bytes
+    expected_md_rel_paths = (
+        "README.md",
+        "CHANGELOG.md",
+        "imageroot/README.md",
+        "ui/README.md",
+        "app/README.md",
+        "app/frontend/README.md",
+        "tests/README.md",
+    )
+    forbidden_german_headings_or_phrases = (
+        "Projektübersicht",
+        "Installationsanleitung",
+        "Konfiguration",
+        "Voraussetzungen",
+        "Schnellstart",
+        "Architekturübersicht",
+        "Sekretariats-Webansicht",
+        "Krankheitsvertretung",
+        "Datensicherung & Wiederherstellung",
+    )
+
+    broken_links: list[str] = []
+    german_doc_hits: list[str] = []
+
+    for rel_md in expected_md_rel_paths:
+        md_path = ROOT_DIR / rel_md
+        assert md_path.is_file(), f"Missing required documentation file `{rel_md}`"
+        raw_bytes = md_path.read_bytes()
+        assert b"\r" not in raw_bytes, f"`{rel_md}` contains forbidden CR (`\\r`) bytes"
+        md_text = raw_bytes.decode("utf-8")
+        assert len(md_text.strip()) > 200, f"`{rel_md}` appears unexpectedly empty/truncated"
+
+        for w in forbidden_german_headings_or_phrases:
+            if w in md_text:
+                german_doc_hits.append(f"{rel_md}: contains German phrase `{w}`")
+        umlauts = sorted({ch for ch in md_text if ch in "äöüÄÖÜß"})
+        if umlauts:
+            german_doc_hits.append(f"{rel_md}: contains German umlaut characters {umlauts}")
+
+        # Validate all internal relative Markdown links `[label](relative/path)`
+        stripped_code = re.sub(r"```[\s\S]*?```", "", md_text)
+        for link_match in re.finditer(
+            r"\[[^\]]+\]\((?!https?://|mailto:|#)([^)#?\s]+)(?:[#?][^)]*)?\)",
+            stripped_code,
+        ):
+            rel_target = link_match.group(1).strip()
+            resolved_target = (md_path.parent / rel_target).resolve()
+            if not resolved_target.exists():
+                broken_links.append(f"{rel_md} -> `{rel_target}` (missing {resolved_target})")
+
+    assert not german_doc_hits, (
+        "All 7 repository `.md` files MUST be 100% English-only:\n  - "
+        + "\n  - ".join(german_doc_hits)
+    )
+    assert not broken_links, (
+        "Broken relative links found in Markdown documentation:\n  - "
+        + "\n  - ".join(broken_links)
+    )
+
+    readme_text = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
     assert "BLS-ISP/ns8-mailtoolbox" in readme_text, (
         "README.md must reference `BLS-ISP/ns8-mailtoolbox`"
     )
@@ -1465,22 +1531,31 @@ def test_github_release_alignment_and_english_readme():
     assert "ns8-imapsync" in readme_text and "imapsync@any:reader" in readme_text, (
         "README.md must document the NS8 IMAP-Sync (`ns8-imapsync`) Sync Bridge and `imapsync@any:reader` authorization"
     )
+    for subdoc_link in (
+        "./CHANGELOG.md",
+        "./imageroot/README.md",
+        "./ui/README.md",
+        "./app/README.md",
+        "./app/frontend/README.md",
+        "./tests/README.md",
+    ):
+        assert subdoc_link in readme_text, (
+            f"Root `README.md` must link to component doc `{subdoc_link}`"
+        )
 
-    forbidden_german_headings_or_phrases = (
-        "Projektübersicht",
-        "Installationsanleitung",
-        "Konfiguration",
-        "Voraussetzungen",
-        "Schnellstart",
-        "Architekturübersicht",
-        "Sekretariats-Webansicht",
-        "Krankheitsvertretung",
-        "Datensicherung & Wiederherstellung",
-    )
-    found_german = [w for w in forbidden_german_headings_or_phrases if w in readme_text]
-    assert not found_german, (
-        f"README.md must be 100% English-only, but still contains German headings/terms: {found_german}"
-    )
+    changelog_text = (ROOT_DIR / "CHANGELOG.md").read_text(encoding="utf-8")
+    for rel_ver in ("1.0.5", "1.0.4", "1.0.3", "1.0.2", "1.0.1", "1.0.0"):
+        assert f"## [{rel_ver}]" in changelog_text, (
+            f"CHANGELOG.md missing section `## [{rel_ver}]`"
+        )
+        assert f"https://github.com/BLS-ISP/ns8-mailtoolbox/releases/tag/v{rel_ver}" in changelog_text, (
+            f"CHANGELOG.md missing release tag URL for `v{rel_ver}`"
+        )
+
+    ui_pkg_ver = json.loads((UI_DIR / "package.json").read_text(encoding="utf-8")).get("version")
+    portal_pkg_ver = json.loads((FRONTEND_DIR / "package.json").read_text(encoding="utf-8")).get("version")
+    assert ui_pkg_ver == "1.0.5", f"ui/package.json version expected '1.0.5', got {ui_pkg_ver!r}"
+    assert portal_pkg_ver == "1.0.5", f"app/frontend/package.json version expected '1.0.5', got {portal_pkg_ver!r}"
 
     # 2. OCI & Software Center metadata alignment across app/Containerfile, build-images.sh & ui/public/metadata.json
     containerfile_text = APP_CONTAINERFILE.read_text(encoding="utf-8")
@@ -1639,7 +1714,7 @@ def test_contract_imageroot_to_backend_internal_routes():
 
     imageroot_api_paths: list[tuple[Path, str]] = []
     for script_path in _iter_files(IMAGEROOT_DIR):
-        if script_path.suffix == ".json":
+        if script_path.suffix in {".json", ".md"}:
             continue
         text = script_path.read_text(encoding="utf-8")
         for m in re.finditer(r"(/api/[A-Za-z0-9_./{}-]+)", text):
