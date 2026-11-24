@@ -1,9 +1,11 @@
 """Phase 3a Spam Quarantine Digest, Scanner-Safe Public Token Release & Sender Allowlist.
 
-Connects to Dovecot via IMAP Master-User (`\x00user*vmail\x00pass`), inspects `Junk`,
-sends daily HTML+Plaintext digest emails ONLY when new spam arrived, provides two-step
-link-scanner-safe release endpoints (`GET /api/quarantine/token/{token}` +
-`POST /api/quarantine/action`), and rescues allowlisted senders from `Junk` to `INBOX`.
+Connects to Dovecot via IMAP Master-User (`\x00user*vmail\x00pass`), inspects `Junk` headers via
+`BODY.PEEK[HEADER]`, delivers daily Carbon HTML+Plaintext digest emails directly into local users'
+`INBOX` via Dovecot Master-User IMAP `APPEND` (bypassing Rspamd false-positive spam scoring, with
+SMTP fallback), provides two-step link-scanner-safe release endpoints
+(`GET /api/quarantine/token/{token}` + `POST /api/quarantine/action`), and rescues allowlisted
+senders from `Junk` to `INBOX`.
 """
 
 from __future__ import annotations
@@ -11,15 +13,14 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import email
-from email.message import EmailMessage
 import email.policy
 from email.utils import parseaddr, parsedate_to_datetime
-import html
 import imaplib
 import logging
 import re
 import secrets
 import smtplib
+import time
 from typing import Any, Callable, Iterator
 
 from app.backend.config import AppSettings, MailSettings, get_settings
@@ -36,6 +37,11 @@ from app.backend.db import (
     mark_quarantine_token_used,
     set_meta,
     utc_now_iso,
+)
+from app.backend.email_templates import (
+    MAX_DIGEST_DISPLAY_ITEMS,
+    build_quarantine_digest_email,
+    resolve_sender_domain,
 )
 from app.backend.service import build_base_mailbox_map
 
@@ -124,6 +130,70 @@ def deliver_smtp_raw(
         smtp.sendmail(mail_from, [rcpt_to], raw_bytes)
 
 
+def resolve_local_mailbox_user(
+    address_or_user: str,
+    base_map: dict[str, dict[str, Any]],
+) -> str:
+    """Resolve an email address, alias, or username to a local NS8 mailbox username (or '')."""
+    raw = (address_or_user or "").strip()
+    if not raw or not base_map:
+        return ""
+    candidate = (parseaddr(raw)[1] or raw).strip().lower()
+    if not candidate:
+        return ""
+
+    for u_key, meta in base_map.items():
+        if not meta.get("enabled", True):
+            continue
+        u_name = str(meta.get("user") or u_key).strip()
+        if candidate in (u_key.lower(), u_name.lower()):
+            return u_name
+        primary_mail = (parseaddr(str(meta.get("mail") or ""))[1] or str(meta.get("mail") or "")).strip().lower()
+        if primary_mail and candidate == primary_mail:
+            return u_name
+        for alias in meta.get("aliases") or []:
+            alias_mail = (parseaddr(str(alias))[1] or str(alias)).strip().lower()
+            if alias_mail and candidate == alias_mail:
+                return u_name
+    return ""
+
+
+def deliver_to_user_inbox_or_smtp(
+    raw_bytes: bytes,
+    mail_from: str,
+    rcpt_to: str,
+    target_user: str,
+    mail_cfg: MailSettings,
+) -> str:
+    """Deliver a system email directly into `INBOX` via Dovecot Master-User IMAP APPEND, or SMTP fallback."""
+    if _custom_smtp_sender is not None:
+        _custom_smtp_sender(raw_bytes, mail_from, rcpt_to, mail_cfg)
+        return "smtp"
+
+    clean_user = (target_user or "").strip()
+    if clean_user and mail_cfg.host and mail_cfg.master_password:
+        try:
+            with open_master_imap(clean_user, mail_cfg) as conn:
+                typ, _resp = conn.append(
+                    "INBOX",
+                    "",
+                    imaplib.Time2Internaldate(time.time()),
+                    raw_bytes,
+                )
+                if typ != "OK":
+                    raise RuntimeError(f"IMAP APPEND to INBOX returned {typ!r}")
+            return "imap_append"
+        except Exception as exc:
+            logger.warning(
+                "Direct IMAP APPEND to INBOX failed for %s (%s); falling back to SMTP",
+                clean_user,
+                exc,
+            )
+
+    deliver_smtp_raw(raw_bytes, mail_from, rcpt_to, mail_cfg)
+    return "smtp"
+
+
 def _extract_spam_score(msg: email.message.Message) -> float | None:
     spamd_hdr = str(msg.get("X-Spamd-Result") or "")
     if spamd_hdr:
@@ -175,12 +245,49 @@ def _extract_fetch_bytes(fetch_data: Any) -> bytes | None:
     return None
 
 
+def _fetch_uid_header_bytes(imap: Any, uid: str) -> bytes | None:
+    """Fetch only RFC 5322 headers via `BODY.PEEK[HEADER]`, falling back to `(RFC822)` if empty."""
+    try:
+        f_typ, f_data = imap.uid("FETCH", uid, "(BODY.PEEK[HEADER])")
+        if f_typ == "OK":
+            raw_hdr = _extract_fetch_bytes(f_data)
+            if raw_hdr:
+                return raw_hdr
+    except Exception:
+        pass
+
+    f_typ2, f_data2 = imap.uid("FETCH", uid, "(RFC822)")
+    if f_typ2 != "OK":
+        return None
+    return _extract_fetch_bytes(f_data2)
+
+
+def _is_toolbox_system_email(
+    parsed: email.message.Message,
+    sender_raw: str,
+    sender_addr: str,
+    subject: str,
+) -> bool:
+    """Detect Mail Toolbox's own digests/alerts in `Junk` to prevent self-digest loops."""
+    if str(parsed.get("X-NS8-Mail-Toolbox") or "").strip():
+        return True
+    addr_low = (sender_addr or "").strip().lower()
+    raw_low = (sender_raw or "").strip().lower()
+    if addr_low.startswith(("quarantine-noreply@", "connector-alert@")):
+        return True
+    if addr_low.startswith("noreply@") and "mail toolbox" in raw_low:
+        return True
+    if subject.startswith(("Spam Quarantine Digest (", "[NS8 Mail Toolbox]")):
+        return True
+    return False
+
+
 def fetch_user_junk_items(
     user: str,
     recipient_email: str,
     mail_cfg: MailSettings,
 ) -> list[dict[str, Any]]:
-    """Read all messages currently sitting in `user`'s `Junk` IMAP folder."""
+    """Read message headers currently sitting in `user`'s `Junk` IMAP folder."""
     items: list[dict[str, Any]] = []
     with open_master_imap(user, mail_cfg) as imap:
         typ, _ = imap.select(mail_cfg.spam_folder, readonly=True)
@@ -192,16 +299,16 @@ def fetch_user_junk_items(
 
         raw_uids = s_data[0].decode("ascii", errors="ignore").split()
         for uid in raw_uids:
-            f_typ, f_data = imap.uid("FETCH", uid, "(RFC822)")
-            if f_typ != "OK":
-                continue
-            raw_msg = _extract_fetch_bytes(f_data)
+            raw_msg = _fetch_uid_header_bytes(imap, uid)
             if not raw_msg:
                 continue
             parsed = email.message_from_bytes(raw_msg, policy=email.policy.default)
             sender_raw = str(parsed.get("From") or "").strip()
             sender_addr = parseaddr(sender_raw)[1].strip() or sender_raw
             subject = str(parsed.get("Subject") or "(No Subject)").strip()
+            if _is_toolbox_system_email(parsed, sender_raw, sender_addr, subject):
+                continue
+
             msg_id = str(parsed.get("Message-ID") or "").strip() or f"<uid-{user}-{uid}@quarantine>"
             received_at = _parse_received_date(str(parsed.get("Date") or ""))
             spam_score = _extract_spam_score(parsed)
@@ -251,8 +358,7 @@ def move_junk_to_inbox(
             if not message_id:
                 target_uid = uid
             else:
-                f_typ, f_data = imap.uid("FETCH", uid, "(RFC822)")
-                raw = _extract_fetch_bytes(f_data) if f_typ == "OK" else None
+                raw = _fetch_uid_header_bytes(imap, uid)
                 if raw:
                     parsed = email.message_from_bytes(raw, policy=email.policy.default)
                     cur_mid = str(parsed.get("Message-ID") or "").strip()
@@ -261,8 +367,7 @@ def move_junk_to_inbox(
 
         if target_uid is None and message_id:
             for cand_uid in existing_uids:
-                f_typ, f_data = imap.uid("FETCH", cand_uid, "(RFC822)")
-                raw = _extract_fetch_bytes(f_data) if f_typ == "OK" else None
+                raw = _fetch_uid_header_bytes(imap, cand_uid)
                 if not raw:
                     continue
                 parsed = email.message_from_bytes(raw, policy=email.policy.default)
@@ -323,87 +428,8 @@ def rescue_allowlisted_junk_messages(settings: AppSettings | None = None) -> int
     return rescued
 
 
-def _build_digest_email(
-    *,
-    recipient_email: str,
-    portal_hostname: str,
-    items_with_tokens: list[tuple[dict[str, Any], str]],
-    mail_from: str,
-) -> bytes:
-    base_url = (
-        f"https://{portal_hostname}"
-        if portal_hostname
-        else "https://localhost"
-    ).rstrip("/")
-
-    count = len(items_with_tokens)
-    plain_lines = [
-        "Spam Quarantine Digest",
-        "======================",
-        "",
-        f"You have {count} new quarantined message(s) in your Spam folder:",
-        "",
-    ]
-    html_rows: list[str] = []
-
-    for item, token in items_with_tokens:
-        rel_url = f"{base_url}/?quarantine_token={token}&op=release"
-        allow_url = f"{base_url}/?quarantine_token={token}&op=release_and_allow"
-        score_str = f"{item['spam_score']:.1f}" if item["spam_score"] is not None else "-"
-
-        plain_lines.extend(
-            [
-                f"- Received: {item['received_at']} (Score: {score_str})",
-                f"  From: {item['sender']}",
-                f"  Subject: {item['subject']}",
-                f"  Deliver to Inbox: {rel_url}",
-                f"  Deliver & Allow Sender: {allow_url}",
-                "",
-            ]
-        )
-
-        html_rows.append(
-            "<tr>"
-            f'<td style="padding:8px;border-bottom:1px solid #e0e0e0;white-space:nowrap;">{html.escape(item["received_at"])}</td>'
-            f'<td style="padding:8px;border-bottom:1px solid #e0e0e0;">{html.escape(item["sender"])}</td>'
-            f'<td style="padding:8px;border-bottom:1px solid #e0e0e0;"><strong>{html.escape(item["subject"])}</strong></td>'
-            f'<td style="padding:8px;border-bottom:1px solid #e0e0e0;white-space:nowrap;">{html.escape(score_str)}</td>'
-            f'<td style="padding:8px;border-bottom:1px solid #e0e0e0;white-space:nowrap;">'
-            f'<a href="{html.escape(rel_url, quote=True)}" style="color:#0f62fe;text-decoration:none;margin-right:10px;">Deliver to Inbox</a>'
-            f'<a href="{html.escape(allow_url, quote=True)}" style="color:#198038;text-decoration:none;">Deliver &amp; Allow Sender</a>'
-            "</td>"
-            "</tr>"
-        )
-
-    html_body = (
-        '<!doctype html><html><body style="font-family:Arial,sans-serif;font-size:14px;color:#161616;">'
-        '<h2 style="font-size:18px;margin-bottom:8px;">Spam Quarantine Digest</h2>'
-        f"<p>You have <strong>{count}</strong> new quarantined message(s) in your Spam folder:</p>"
-        '<table style="border-collapse:collapse;width:100%;max-width:880px;font-size:13px;">'
-        "<thead><tr style=\"background:#f4f4f4;text-align:left;\">"
-        '<th style="padding:8px;">Received</th>'
-        '<th style="padding:8px;">From</th>'
-        '<th style="padding:8px;">Subject</th>'
-        '<th style="padding:8px;">Score</th>'
-        '<th style="padding:8px;">Actions</th>'
-        "</tr></thead>"
-        f"<tbody>{''.join(html_rows)}</tbody>"
-        "</table>"
-        "</body></html>"
-    )
-
-    msg = EmailMessage()
-    msg["From"] = mail_from
-    msg["To"] = recipient_email
-    msg["Subject"] = f"Spam Quarantine Digest ({count} new message(s))"
-    msg.set_content("\n".join(plain_lines), cte="8bit")
-    msg.add_alternative(html_body, subtype="html", cte="8bit")
-    smtp_policy = email.policy.SMTP.clone(max_line_length=998)
-    return msg.as_bytes(policy=smtp_policy)
-
-
 def run_quarantine_digest(*, user_filter: str = "") -> dict[str, int]:
-    """Scan Junk folders and send digest emails ONLY to users with >=1 new spam message."""
+    """Scan Junk folders and deliver digest emails ONLY to users with >=1 new spam message."""
     settings = get_settings()
     rescue_allowlisted_junk_messages(settings)
 
@@ -418,9 +444,10 @@ def run_quarantine_digest(*, user_filter: str = "") -> dict[str, int]:
             continue
         candidates.append(meta)
 
+    fallback_domain = resolve_sender_domain("", settings, base_map)
     if target_user and not candidates:
         fallback_mail = (
-            f"{target_user}@{settings.ldap.domain}" if settings.ldap.domain else target_user
+            f"{target_user}@{fallback_domain}" if fallback_domain else target_user
         )
         candidates.append({"user": target_user, "mail": fallback_mail, "enabled": True})
 
@@ -429,12 +456,24 @@ def run_quarantine_digest(*, user_filter: str = "") -> dict[str, int]:
     items_included = 0
     now = datetime.now(timezone.utc)
     expires_iso = (now + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    domain = settings.ldap.domain or settings.portal_hostname or "localhost"
-    sender_from = f"quarantine-noreply@{domain}"
 
     for mb in candidates:
         u_name = str(mb["user"])
-        rcpt_email = str(mb.get("mail") or f"{u_name}@{domain}")
+        raw_mb_mail = str(mb.get("mail") or "").strip()
+        raw_mb_dom = raw_mb_mail.split("@", 1)[1].strip().lower() if "@" in raw_mb_mail else ""
+        if not raw_mb_mail or (raw_mb_dom.startswith(("ad.", "ldap.")) and raw_mb_dom.count(".") >= 2):
+            public_alias = next(
+                (
+                    str(a).strip()
+                    for a in (mb.get("aliases") or [])
+                    if "@" in str(a)
+                    and not str(a).split("@", 1)[1].strip().lower().startswith(("ad.", "ldap."))
+                ),
+                "",
+            )
+            rcpt_email = public_alias or f"{u_name}@{fallback_domain}"
+        else:
+            rcpt_email = raw_mb_mail
         users_checked += 1
 
         try:
@@ -451,8 +490,9 @@ def run_quarantine_digest(*, user_filter: str = "") -> dict[str, int]:
         if not new_items:
             continue
 
-        items_with_tokens: list[tuple[dict[str, Any], str]] = []
-        for it in new_items:
+        displayed_items = new_items[:MAX_DIGEST_DISPLAY_ITEMS]
+        displayed_items_with_tokens: list[tuple[dict[str, Any], str | None]] = []
+        for it in displayed_items:
             token = secrets.token_urlsafe(24)
             create_quarantine_token(
                 token=token,
@@ -467,15 +507,25 @@ def run_quarantine_digest(*, user_filter: str = "") -> dict[str, int]:
                 expires_at=expires_iso,
                 db_path=settings.sqlite_path,
             )
-            items_with_tokens.append((it, token))
+            displayed_items_with_tokens.append((it, token))
 
-        raw_digest = _build_digest_email(
+        sender_domain = resolve_sender_domain(rcpt_email, settings, base_map)
+        raw_digest, env_from = build_quarantine_digest_email(
             recipient_email=rcpt_email,
-            portal_hostname=settings.portal_hostname or "localhost",
-            items_with_tokens=items_with_tokens,
-            mail_from=sender_from,
+            sender_domain=sender_domain,
+            portal_enabled=settings.portal_enabled,
+            portal_hostname=settings.portal_hostname,
+            tz_name=settings.runtime.timezone,
+            displayed_items_with_tokens=displayed_items_with_tokens,
+            total_new_count=len(new_items),
         )
-        deliver_smtp_raw(raw_digest, sender_from, rcpt_email, settings.mail)
+        deliver_to_user_inbox_or_smtp(
+            raw_digest,
+            env_from,
+            rcpt_email,
+            u_name,
+            settings.mail,
+        )
         mark_messages_digested(
             u_name,
             [it["message_id"] for it in new_items],

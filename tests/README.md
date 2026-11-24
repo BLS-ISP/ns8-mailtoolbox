@@ -18,7 +18,8 @@ tests/
 ├── test_e2e_smoke.py                             # Phase 1 E2E: Secretariat Portal SPA, LDAP, ManageSieve, SOGo & backup
 ├── test_phase2_phase3_e2e.py                     # Phases 2–3 + v1.0.1 E2E: Milter, Quarantine, Rspamd TLS/Auth, Connectors & AD
 ├── test_v104_imapsync_bridge_e2e.py              # v1.0.4 E2E: NS8 IMAP-Sync (ns8-imapsync) bridge, Node JS & 24h SMTP alerts
-└── test_v105_notification_and_cache_ttl_e2e.py   # v1.0.5 E2E: Silent NS8 sub-tasks & 300s/3600s smart TTL caching
+├── test_v105_notification_and_cache_ttl_e2e.py   # v1.0.5 E2E: Silent NS8 sub-tasks & 300s/3600s smart TTL caching
+└── test_v106_system_emails_e2e.py                # v1.0.6 E2E: 60-item SOGo digest, quoted-printable DOM, IMAP APPEND & alerts
 ```
 
 Companion backend unit and service test suites in [`../app/backend/tests/`](../app/backend/tests/):
@@ -34,6 +35,7 @@ Companion backend unit and service test suites in [`../app/backend/tests/`](../a
 | `test_hardening_and_portal_tracking.py` | `CONTAINER_HOST_GATEWAY` loopback translation (`10.0.2.2` / `host.containers.internal`), `portal_tracking_enabled` RBAC, and `deactivate-all-vacations` clean uninstall |
 | `test_v101_rspamd_tls_and_ad_groups.py` | Rspamd URL normalization, self-signed TLS & HTTP Basic Auth, AD multi-level nested groups, `primaryGroupID` / `objectSid` RIDs, UPN logins, and `/api/internal/groups` |
 | `test_v104_imapsync_bridge.py` | `imapsync_cache.json` missing/corrupt/populated handling and 24-hour-cooldown `check_imapsync_bridge_alerts()` recovery state machine |
+| `test_v106_email_overhaul.py` | `email_templates.py` Carbon HTML+Plaintext builders, `quoted-printable` line safety, `ad.`/`ldap.` sender domain stripping, `BODY.PEEK[HEADER]` scans, and direct `INBOX` IMAP `APPEND` with SMTP fallback |
 
 ---
 
@@ -58,7 +60,7 @@ Companion backend unit and service test suites in [`../app/backend/tests/`](../a
 | `test_ui_and_portal_i18n_translations_and_fallback` | Enforces 100% `en`/`de` key parity in both `ui/public/i18n/{en,de}/translation.json` and `app/frontend/src/i18n/messages.js`, mandatory NS8 keys, strict English (`en`) default locale without `navigator.language` override, and `<html lang="en">` in `app/frontend/index.html`. |
 | `test_contract_cockpit_ui_to_imageroot_actions_and_schemas` | Cross-checks all 23 Cockpit module actions, `Settings.vue` / `Signatures.vue` / `Connectors.vue` / `Status.vue` fields, and ensures external `ns8-imapsync` bridge tasks (`list-tasks`, `start-task`, `stop-task`, `get-log`) target `targetModuleId` rather than `this.instanceName`. |
 | `test_release_artifacts_license_and_ns8_repo_workflow` | Verifies `GPL-3.0` `LICENSE`, `.github/workflows/publish-ns8-repo.yml`, and clean Sieve cleanup in `destroy-module/20destroy`. |
-| `test_github_release_alignment_and_english_readme` | Audits all **7 repository Markdown files** (`README.md`, `CHANGELOG.md`, `imageroot/README.md`, `ui/README.md`, `app/README.md`, `app/frontend/README.md`, `tests/README.md`) for 100% English-only prose, valid relative links, `BLS-ISP` OCI/Software Center metadata alignment, and `1.0.5` version consistency. |
+| `test_github_release_alignment_and_english_readme` | Audits all **7 repository Markdown files** (`README.md`, `CHANGELOG.md`, `imageroot/README.md`, `ui/README.md`, `app/README.md`, `app/frontend/README.md`, `tests/README.md`) for 100% English-only prose, valid relative links, `BLS-ISP` OCI/Software Center metadata alignment, and `1.0.6` version consistency. |
 | `test_contract_imageroot_to_backend_internal_routes` | Verifies every `/api/internal/*` URL called in `imageroot/` matches a registered FastAPI route in `app.backend.main:app`. |
 | `test_contract_portal_frontend_to_backend_api_routes` | Verifies every `/api/*` endpoint called in `app/frontend/src/**` matches a registered FastAPI route. |
 | `test_jsonschema_ui_inputs_and_live_backend_outputs` | Validates all **40 Draft-07 JSON schemas** (`validate-input.json` & `validate-output.json`), UI payloads (including `null` / `{}` / `force_refresh` on `list-mailboxes` & `list-connectors`), and live FastAPI `TestClient` responses. |
@@ -71,7 +73,7 @@ Companion backend unit and service test suites in [`../app/backend/tests/`](../a
    - Mounts the compiled Vue 3 Secretariat Portal (`app/frontend/dist/index.html`), authenticates via `ldap3` OpenLDAP against `ALLOWED_GROUPS`, connects over real TCP to `MockManageSieveServer` (`<user>*vmail`), tests SOGo `sogo.sieve` filter inclusion (`include :personal "sogo";`) vs personal vacation suppression, simulates SOGo's nightly `00:00` cron override and `/api/internal/reconcile` recovery, disables absence to confirm `SETACTIVE "sogo"` restoration, verifies audit logs, and runs an online SQLite backup via `python -m app.backend.backup_db`.
 2. **`tests/test_phase2_phase3_e2e.py`**:
    - **Phase 2 Before-DKIM Milter**: Streams multipart/mixed messages with PDF attachments over real TCP binary Milter packets (`MilterTestClient`), verifying AD placeholder injection, reply deduplication, and `SMFIR_ACCEPT` bypass on unauthenticated inbound port 25 mail.
-   - **Phase 3a Quarantine Digest & Release**: Seeds spam into `MockImapServer` (`Junk`), runs `/api/internal/quarantine/run-digest` delivering via `MockSmtpSubmissionServer`, tests scanner-safe idempotent `GET /api/quarantine/token/{token}` prefetching, confirms `POST /api/quarantine/action` (`release_and_allow`) moves `Junk` -> `INBOX`, and verifies future allowlisted sender rescue.
+   - **Phase 3a Quarantine Digest & Release**: Seeds spam into `MockImapServer` (`Junk`), runs `/api/internal/quarantine/run-digest` delivering directly into `INBOX` via Dovecot Master-User IMAP `APPEND` (scanning `BODY.PEEK[HEADER]`), tests scanner-safe idempotent `GET /api/quarantine/token/{token}` prefetching, confirms `POST /api/quarantine/action` (`release_and_allow`) moves `Junk` -> `INBOX`, and verifies future allowlisted sender rescue.
    - **Phase 3b Rspamd Mail Tracking**: Queries `MockRspamdServer` `/history`, normalizes statuses (`delivered`, `spam`, `greylisted`, `rejected`), and confirms SQLite `mail_history_cache` serves results even after Rspamd's ring buffer is cleared.
    - **Phase 3c External POP3/IMAP Connectors**: Tests `MockPop3Server` and `MockImapServer` polling, Fernet password encryption at rest in SQLite, UID/UIDL deduplication, `leave_on_server` deletion, and 24h-cooldown admin failure alert emails.
    - **`v1.0.1` HTTPS Self-Signed Rspamd & Enterprise AD**: Generates an ephemeral RSA-2048 self-signed X.509 certificate (`MockHttpsTraefikRspamdServer`) with HTTP Basic Auth at `/rspamd/history`, verifying `rspamd_tls_verify=True` rejection vs `rspamd_tls_verify=False` + `rspamd_user` success, alongside Active Directory nested groups, `primaryGroupID=513` (`Domain Users` `objectSid` RID), and custom UPN login (`julia@custom-upn.de`).
@@ -79,6 +81,8 @@ Companion backend unit and service test suites in [`../app/backend/tests/`](../a
    - Exercises `imageroot/bin/toolbox_imapsync.py`, `sync-mailboxes-cache`, and `list-connectors/20read` across clusters with zero vs coupled + uncoupled `ns8-imapsync` instances (validating outputs against `list-connectors/validate-output.json`), runs `ui/src/utils/imapsyncBridge.js` in Node.js against both normalized and raw upstream `user_properties` payloads, and verifies 24h-cooldown SMTP failure alerts and recovery resets.
 4. **`tests/test_v105_notification_and_cache_ttl_e2e.py`**:
    - Verifies `sync-mailboxes-cache` (`--min-age 300`, `--skip-imapsync`, `only_coupled=True`), `list-mailboxes/20read`, `list-connectors/20read`, `get-configuration/20read`, and `discover-mail-instance/20read` execute **zero** child `agent.tasks.run` calls on warm cache hits and pass `extra={'isNotificationHidden': True}` on live/forced refreshes.
+5. **`tests/test_v106_system_emails_e2e.py`**:
+   - Reproduces the 60-item `genera@bls-isp.net` (`ad.bls-isp.net`) SOGo production scenario over real TCP `MockImapServer` + `MockSmtpSubmissionServer` (verifying old `Junk` digest loop immunity, 50-item cap + overflow banner, `quoted-printable` wire lines, `html.parser` strict tag balance with zero links outside `<table>`, public `@bls-isp.net` sender domain, and direct `INBOX` IMAP `APPEND`), plus multipart HTML + Plaintext Connector and `ns8-imapsync` failure alerts across local `INBOX` `APPEND` and external SMTP fallback.
 
 ---
 

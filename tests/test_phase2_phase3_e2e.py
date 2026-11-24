@@ -469,7 +469,7 @@ def test_phase3a_quarantine_digest_and_scanner_safe_token_release(
         assert "angebote@b2b-partner.de" in items[0]["sender"]
         assert items[0]["subject"] == "Wichtige Preisliste November"
 
-        # 2. Run Quarantine Digest -> sends 1 email ONLY to max.muster@firma.de
+        # 2. Run Quarantine Digest -> delivers 1 digest directly into `max.muster`'s INBOX via IMAP APPEND (0 SMTP calls!)
         run1 = client.post(
             "/api/internal/quarantine/run-digest",
             headers=hdrs,
@@ -477,15 +477,23 @@ def test_phase3a_quarantine_digest_and_scanner_safe_token_release(
         )
         assert run1.status_code == 200
         assert run1.json()["digests_sent"] == 1
-        sent_mails = smtp_srv.get_messages()
-        assert len(sent_mails) == 1
-        assert sent_mails[0].rcpt_tos == ["max.muster@firma.de"]
+        assert smtp_srv.get_messages() == []
+        assert imap_srv.list_folder_messages("claudia.schmidt", "INBOX") == []
 
-        digest_raw_text = sent_mails[0].raw_bytes.decode("utf-8", errors="replace")
+        inbox_after_digest = imap_srv.list_folder_messages("max.muster", "INBOX")
+        assert len(inbox_after_digest) == 1
+        assert any(u == "max.muster" and f == "INBOX" for u, f, _ in imap_srv.append_log)
+        assert any(
+            u == "max.muster" and f == "Junk" and "HEADER" in spec.upper()
+            for u, f, spec in imap_srv.fetch_specs_log
+        )
+
+        digest_raw_text = inbox_after_digest[0].raw_bytes.decode("utf-8", errors="replace")
         # Extract URL from HTML/text digest (decode quoted-printable soft linebreaks if any)
         unwrapped = re.sub(r"=\r?\n", "", digest_raw_text).replace("=3D", "=")
         assert "Spam Quarantine Digest" in unwrapped
         assert "Deliver to Inbox" in unwrapped
+        assert "X-NS8-Mail-Toolbox: quarantine-digest" in unwrapped
         url_match = re.search(
             r"https://vertretung\.firma\.de/\?quarantine_token=([A-Za-z0-9._~-]+)",
             unwrapped,
@@ -494,7 +502,7 @@ def test_phase3a_quarantine_digest_and_scanner_safe_token_release(
         parsed_qs = parse_qs(urlparse(url_match.group(0)).query)
         token = parsed_qs["quarantine_token"][0]
 
-        # 3. Re-running digest immediately sends 0 duplicate digests
+        # 3. Re-running digest immediately sends 0 duplicate digests (and ignores any toolbox email!)
         run2 = client.post(
             "/api/internal/quarantine/run-digest",
             headers=hdrs,
@@ -502,7 +510,8 @@ def test_phase3a_quarantine_digest_and_scanner_safe_token_release(
         )
         assert run2.status_code == 200
         assert run2.json()["digests_sent"] == 0
-        assert len(smtp_srv.get_messages()) == 1
+        assert len(imap_srv.list_folder_messages("max.muster", "INBOX")) == 1
+        assert smtp_srv.get_messages() == []
 
         # 4. Scanner-Safe Step 1: Corporate link-scanner prefetches GET twice WITHOUT consuming token!
         for _ in range(2):
@@ -516,7 +525,7 @@ def test_phase3a_quarantine_digest_and_scanner_safe_token_release(
             assert "angebote@b2b-partner.de" in info["sender"].lower()
 
         assert len(imap_srv.list_folder_messages("max.muster", "Junk")) == 1
-        assert len(imap_srv.list_folder_messages("max.muster", "INBOX")) == 0
+        assert len(imap_srv.list_folder_messages("max.muster", "INBOX")) == 1
 
         # 5. Scanner-Safe Step 2: Employee confirms release_and_allow via POST (no login cookie!)
         act_res = client.post(
@@ -529,11 +538,11 @@ def test_phase3a_quarantine_digest_and_scanner_safe_token_release(
         assert act_json["delivered"] is True
         assert act_json["allowlisted"] is True
 
-        # Message moved from Junk -> INBOX and expunged from Junk!
+        # Message moved from Junk -> INBOX (INBOX now holds both the digest AND the released spam message!)
         assert len(imap_srv.list_folder_messages("max.muster", "Junk")) == 0
         inbox_msgs = imap_srv.list_folder_messages("max.muster", "INBOX")
-        assert len(inbox_msgs) == 1
-        assert b"<spam-nov-001@b2b-partner.de>" in inbox_msgs[0].raw_bytes
+        assert len(inbox_msgs) == 2
+        assert any(b"<spam-nov-001@b2b-partner.de>" in m.raw_bytes for m in inbox_msgs)
 
         # Token is now marked already_used on subsequent GET and rejected on replay POST
         after_get = client.get(f"/api/quarantine/token/{token}")
@@ -567,7 +576,7 @@ def test_phase3a_quarantine_digest_and_scanner_safe_token_release(
         rec_res = client.post("/api/internal/reconcile", headers=hdrs)
         assert rec_res.status_code == 200
         assert len(imap_srv.list_folder_messages("max.muster", "Junk")) == 0
-        assert len(imap_srv.list_folder_messages("max.muster", "INBOX")) == 2
+        assert len(imap_srv.list_folder_messages("max.muster", "INBOX")) == 3
 
 
 def test_phase3b_mail_tracking_rspamd_search_and_sqlite_persistence(

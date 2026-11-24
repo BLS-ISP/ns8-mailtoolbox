@@ -493,12 +493,22 @@ class MockImapServer:
         self.lock = threading.Lock()
         self.accounts: dict[str, str] = {}  # direct LOGIN user -> password
         self.fail_login_users: set[str] = set()
+        self.fail_append_users: set[str] = set()
         # user -> folder -> list[ImapMessageItem]
         self.folders: dict[str, dict[str, list[ImapMessageItem]]] = {}
+        self.append_log: list[tuple[str, str, int]] = []
+        self.fetch_specs_log: list[tuple[str, str, str]] = []
         self._next_uid: int = 100
         self._server: _ThreadedTCPServer | None = None
         self.host = "127.0.0.1"
         self.port = 0
+
+    def set_append_failure(self, username: str, fail: bool) -> None:
+        with self.lock:
+            if fail:
+                self.fail_append_users.add(username)
+            else:
+                self.fail_append_users.discard(username)
 
     def add_account(self, username: str, password: str) -> None:
         with self.lock:
@@ -723,6 +733,73 @@ class MockImapServer:
                             outer.folders.setdefault(authed_user, {}).setdefault(fname, [])
                         self._send(f"{tag} OK Create completed.")
 
+                    elif cmd == "APPEND":
+                        lit_match = re.search(r"\{(\d+)(\+)?\}\s*$", rest)
+                        if not lit_match:
+                            self._send(f"{tag} BAD APPEND requires literal")
+                            continue
+                        lit_len = int(lit_match.group(1))
+                        non_sync = bool(lit_match.group(2))
+                        prefix = rest[: lit_match.start()].strip()
+
+                        mb_match = re.match(r'^("(?:\\.|[^"\\])*"|\S+)(.*)$', prefix)
+                        if not mb_match:
+                            self._send(f"{tag} BAD Missing APPEND mailbox")
+                            continue
+                        dest_mb = outer._unquote_imap(mb_match.group(1))
+                        rem_meta = mb_match.group(2).strip()
+
+                        app_flags: set[str] = set()
+                        fl_match = re.search(r"\(([^)]*)\)", rem_meta)
+                        if fl_match:
+                            app_flags = set(re.findall(r"\\[A-Za-z]+", fl_match.group(1)))
+                            rem_meta = (
+                                rem_meta[: fl_match.start()] + " " + rem_meta[fl_match.end() :]
+                            ).strip()
+
+                        dt_match = re.search(r'"([^"]+)"', rem_meta)
+                        app_date = dt_match.group(1) if dt_match else "24-Nov-2026 07:30:00 +0000"
+
+                        with outer.lock:
+                            should_fail_append = authed_user in outer.fail_append_users
+
+                        if should_fail_append and not non_sync:
+                            self._send(f"{tag} NO [TRYCREATE] Simulated APPEND failure.")
+                            continue
+
+                        if not non_sync:
+                            self._send("+ Ready for literal data")
+
+                        literal_buf = bytearray()
+                        while len(literal_buf) < lit_len:
+                            chunk = self.rfile.read(lit_len - len(literal_buf))
+                            if not chunk:
+                                break
+                            literal_buf.extend(chunk)
+                        # Consume trailing CRLF after literal
+                        self.rfile.readline()
+
+                        if should_fail_append:
+                            self._send(f"{tag} NO [TRYCREATE] Simulated APPEND failure.")
+                            continue
+
+                        with outer.lock:
+                            outer._next_uid += 1
+                            new_uid = outer._next_uid
+                            ufolders = outer.folders.setdefault(
+                                authed_user, {"INBOX": [], "Junk": []}
+                            )
+                            ufolders.setdefault(dest_mb, []).append(
+                                ImapMessageItem(
+                                    uid=new_uid,
+                                    raw_bytes=bytes(literal_buf),
+                                    flags=app_flags,
+                                    internaldate=app_date,
+                                )
+                            )
+                            outer.append_log.append((authed_user, dest_mb, new_uid))
+                        self._send(f"{tag} OK [APPENDUID 1 {new_uid}] Append completed.")
+
                     elif cmd == "CLOSE":
                         if selected_folder:
                             with outer.lock:
@@ -784,6 +861,7 @@ class MockImapServer:
                             spec = f_parts[1] if len(f_parts) > 1 else "(UID FLAGS BODY[])"
                             spec_upper = spec.upper()
                             with outer.lock:
+                                outer.fetch_specs_log.append((authed_user, selected_folder, spec))
                                 items = list(outer.folders[authed_user][selected_folder])
                             matched = outer._match_seq_or_uid(items, seq_spec, by_uid=by_uid)
 

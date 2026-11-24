@@ -1544,7 +1544,7 @@ def test_github_release_alignment_and_english_readme():
         )
 
     changelog_text = (ROOT_DIR / "CHANGELOG.md").read_text(encoding="utf-8")
-    for rel_ver in ("1.0.5", "1.0.4", "1.0.3", "1.0.2", "1.0.1", "1.0.0"):
+    for rel_ver in ("1.0.6", "1.0.5", "1.0.4", "1.0.3", "1.0.2", "1.0.1", "1.0.0"):
         assert f"## [{rel_ver}]" in changelog_text, (
             f"CHANGELOG.md missing section `## [{rel_ver}]`"
         )
@@ -1554,8 +1554,8 @@ def test_github_release_alignment_and_english_readme():
 
     ui_pkg_ver = json.loads((UI_DIR / "package.json").read_text(encoding="utf-8")).get("version")
     portal_pkg_ver = json.loads((FRONTEND_DIR / "package.json").read_text(encoding="utf-8")).get("version")
-    assert ui_pkg_ver == "1.0.5", f"ui/package.json version expected '1.0.5', got {ui_pkg_ver!r}"
-    assert portal_pkg_ver == "1.0.5", f"app/frontend/package.json version expected '1.0.5', got {portal_pkg_ver!r}"
+    assert ui_pkg_ver == "1.0.6", f"ui/package.json version expected '1.0.6', got {ui_pkg_ver!r}"
+    assert portal_pkg_ver == "1.0.6", f"app/frontend/package.json version expected '1.0.6', got {portal_pkg_ver!r}"
 
     # 2. OCI & Software Center metadata alignment across app/Containerfile, build-images.sh & ui/public/metadata.json
     containerfile_text = APP_CONTAINERFILE.read_text(encoding="utf-8")

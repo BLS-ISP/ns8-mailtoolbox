@@ -213,12 +213,13 @@ def test_quarantine_digest_scanner_safe_release_and_allowlist_rescue(
         assert r_dig2.json() == {"users_checked": 3, "digests_sent": 0, "items_included": 0}
         assert len(sent_emails) == 1
 
-        # Extract quarantine_token from sent English digest email
+        # Extract quarantine_token from sent English digest email (unwrap quoted-printable)
         raw_text = sent_emails[0]["raw"].decode("utf-8", errors="replace")
-        assert "Spam Quarantine Digest (1 new message(s))" in raw_text
-        assert "Deliver to Inbox" in raw_text
-        assert "Deliver & Allow Sender" in raw_text
-        m_tok = re.search(r"quarantine_token=([A-Za-z0-9_\-]+)", raw_text)
+        unwrapped = re.sub(r"=\r?\n", "", raw_text).replace("=3D", "=").replace("=26", "&")
+        assert "Spam Quarantine Digest (1 new message(s))" in unwrapped
+        assert "Deliver to Inbox" in unwrapped
+        assert "Deliver & Allow Sender" in unwrapped
+        m_tok = re.search(r"quarantine_token=([A-Za-z0-9_\-]+)", unwrapped)
         assert m_tok is not None
         token = m_tok.group(1)
 

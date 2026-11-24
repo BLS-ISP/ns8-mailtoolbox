@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [1.0.6] - 2026-11-24
+
+### Added
+- **Unified Carbon-Inspired System Email Design (`app/backend/email_templates.py`):**
+  - Responsive stacked card-row layout (`max-width: 680px`, `table-layout: fixed`) for **Spam Quarantine Digests** engineered for SOGo Webmail 3-pane views, Outlook, Apple Mail, Thunderbird, and mobile clients, featuring color-coded spam score badges, human-readable local timezone timestamps (`ZoneInfo`), a 50-item display cap with overflow summary banner, and Cockpit-only safe fallback when `portal_enabled` is disabled.
+  - Multipart **Plaintext + HTML** diagnostic templates (`border-top: 4px solid #da1e28`) for **External POP3/IMAP Connector Failure Alerts** and **NS8 IMAP-Sync (`ns8-imapsync`) Task Failure Alerts**.
+  - Automatic real mail domain resolution (`resolve_sender_domain`, stripping internal `ad.`/`ldap.` directory prefixes) plus standard `Date`, `Message-ID`, `Auto-Submitted: auto-generated`, `Precedence: bulk`, `X-Auto-Response-Suppress: All`, and `X-NS8-Mail-Toolbox` headers.
+
+### Changed
+- `fetch_user_junk_items` now fetches message headers via `BODY.PEEK[HEADER]` (with `(RFC822)` fallback) instead of downloading full spam MIME bodies and attachments during `Junk` folder scans.
+
+### Fixed
+- **Eliminated 998-Byte `8bit` HTML Line-Splitting Corruption:** Formatted outgoing HTML emails with clean multi-line breaks (`< 200` chars/line) and `quoted-printable` transfer encoding (`cte="quoted-printable"`) on both plaintext and HTML MIME parts so RFC 5321 line-length limits never split HTML tags, CSS attributes, or release URLs in Webmail.
+- **Direct `INBOX` Delivery & Self-Digest Loop Prevention:** Quarantine Digests and local administrator failure alerts are now delivered directly into `INBOX` via Dovecot Master-User IMAP `APPEND` (with SMTP fallback for external addresses), bypassing Rspamd false-positive spam scoring on digest summaries, while `Junk` folder scans explicitly skip `X-NS8-Mail-Toolbox` system messages.
+
+---
+
 ## [1.0.5] - 2026-11-21
 
 ### Added
@@ -84,6 +101,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - **External POP3/IMAP Mail Connectors** with Fernet-encrypted credentials at rest, UID/UIDL deduplication, connection testing, manual sync, and failure alert emails.
   - Complete NS8 rootless lifecycle support: online SQLite Restic backups (`module-dump-state`), `restore-module`, `clone-module` (cluster node migration), `update-module.d/20restart`, cluster event handlers (`mail-settings-changed`, `user-domain-changed`), and clean Sieve restoration on `destroy-module`.
 
+[1.0.6]: https://github.com/BLS-ISP/ns8-mailtoolbox/releases/tag/v1.0.6
 [1.0.5]: https://github.com/BLS-ISP/ns8-mailtoolbox/releases/tag/v1.0.5
 [1.0.4]: https://github.com/BLS-ISP/ns8-mailtoolbox/releases/tag/v1.0.4
 [1.0.3]: https://github.com/BLS-ISP/ns8-mailtoolbox/releases/tag/v1.0.3

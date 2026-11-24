@@ -171,6 +171,7 @@ class AppSettings:
     secret_key: str
     internal_token: str
     allowed_groups: list[str] = field(default_factory=list)
+    portal_enabled: bool = True
     portal_hostname: str = ""
     session_ttl_seconds: int = 43200
     reconcile_interval_seconds: int = 300
@@ -458,6 +459,7 @@ def get_settings() -> AppSettings:
     secret_key = os.environ.get("APP_SECRET_KEY", "").strip() or _EPHEMERAL_SECRET_KEY
     allowed_groups = parse_allowed_groups(os.environ.get("ALLOWED_GROUPS", ""))
     portal_hostname = os.environ.get("PORTAL_HOSTNAME", "").strip()
+    portal_enabled = _parse_bool(os.environ.get("PORTAL_ENABLED"), bool(portal_hostname))
 
     mail_settings = MailSettings(
         host=translate_loopback_host(mget("MAIL_HOST", "")),
@@ -496,6 +498,7 @@ def get_settings() -> AppSettings:
         secret_key=secret_key,
         internal_token=internal_token,
         allowed_groups=allowed_groups,
+        portal_enabled=portal_enabled,
         portal_hostname=portal_hostname,
         session_ttl_seconds=_parse_int(os.environ.get("SESSION_TTL_SECONDS"), 43200),
         reconcile_interval_seconds=_parse_int(os.environ.get("RECONCILE_INTERVAL_SECONDS"), 300),

@@ -1,9 +1,10 @@
 """Phase 3c External POP3/IMAP Connectors with Fernet Encryption & Admin Failure Alerts.
 
 Polls external ISP mailboxes (IMAPS, IMAP, POP3S, POP3), deduplicates by UID/UIDL in SQLite,
-delivers new RFC822 messages into local NS8 mailboxes via SMTP submission, and sends an
-automatic warning email (with 24h cooldown) to `admin_alert_email` when an external login
-or connection fails (e.g. changed password at ISP).
+delivers new RFC822 messages into local NS8 mailboxes via SMTP submission, and sends a
+Carbon-styled Plaintext + HTML warning email (with 24h cooldown) to `admin_alert_email`
+via direct Dovecot Master-User `INBOX` IMAP `APPEND` (or SMTP fallback for external admins)
+when an external login, connection, or coupled `ns8-imapsync` task fails.
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timedelta, timezone
 import email
-from email.message import EmailMessage
 import email.policy
 import hashlib
 import imaplib
@@ -38,7 +38,17 @@ from app.backend.db import (
     upsert_imapsync_alert_state,
     utc_now_iso,
 )
-from app.backend.quarantine_service import deliver_smtp_raw
+from app.backend.email_templates import (
+    build_connector_failure_alert_email,
+    build_imapsync_failure_alert_email,
+    resolve_sender_domain,
+)
+from app.backend.quarantine_service import (
+    deliver_smtp_raw,
+    deliver_to_user_inbox_or_smtp,
+    resolve_local_mailbox_user,
+)
+from app.backend.service import build_base_mailbox_map
 
 logger = logging.getLogger(__name__)
 
@@ -259,29 +269,27 @@ def _send_connector_failure_alert(
     if not _should_send_failure_alert(str(conn_row.get("alert_sent_at") or "")):
         return False
 
-    domain = settings.ldap.domain or settings.portal_hostname or "localhost"
-    mail_from = f"connector-alert@{domain}"
+    try:
+        base_map = build_base_mailbox_map(settings)
+    except Exception:
+        base_map = {}
 
-    msg = EmailMessage()
-    msg["From"] = mail_from
-    msg["To"] = alert_to
-    msg["Subject"] = f"[NS8 Mail Toolbox] External Mail Connector Alert: {conn_row['name']}"
-    msg.set_content(
-        "Warning: External POP3/IMAP mail connector synchronization failed.\n\n"
-        f"Connector:            {conn_row['name']} (#{conn_row['id']})\n"
-        f"Remote Account:       {conn_row['remote_user']} @ {conn_row['host']}:{conn_row['port']} ({conn_row['protocol']})\n"
-        f"Target Mailbox:       {conn_row['target_email']}\n"
-        f"Consecutive Failures: {failure_count}\n"
-        f"Error Message:        {error_msg}\n\n"
-        "Please check NS8 Cockpit -> Mail Toolbox -> Connectors to verify whether the external account password or server settings have changed.\n",
-        cte="8bit",
+    sender_domain = resolve_sender_domain(alert_to, settings, base_map)
+    target_user = resolve_local_mailbox_user(alert_to, base_map)
+    raw_bytes, mail_from = build_connector_failure_alert_email(
+        conn_row=conn_row,
+        error_msg=error_msg,
+        failure_count=failure_count,
+        recipient_email=alert_to,
+        sender_domain=sender_domain,
+        tz_name=settings.runtime.timezone,
     )
     try:
-        smtp_policy = email.policy.SMTP.clone(max_line_length=998)
-        deliver_smtp_raw(
-            msg.as_bytes(policy=smtp_policy),
+        deliver_to_user_inbox_or_smtp(
+            raw_bytes,
             mail_from,
             alert_to,
+            target_user,
             settings.mail,
         )
         return True
@@ -311,7 +319,7 @@ def sync_connector_by_id(connector_id: int) -> dict[str, Any]:
     remote_user = str(conn_row["remote_user"])
     leave_on_server = bool(conn_row["leave_on_server"])
     target_email = str(conn_row["target_email"])
-    domain = settings.ldap.domain or "localhost"
+    domain = resolve_sender_domain(target_email, settings)
     fallback_env_from = f"connector@{domain}"
 
     try:
@@ -503,51 +511,29 @@ def _send_imapsync_failure_alert(
     if not alert_to:
         return False
 
-    domain = settings.ldap.domain or settings.portal_hostname or "localhost"
-    mail_from = f"connector-alert@{domain}"
+    try:
+        base_map = build_base_mailbox_map(settings)
+    except Exception:
+        base_map = {}
 
-    task_id = str(task.get("task_id") or "")
-    localuser = str(task.get("localuser") or "")
-    remoteuser = str(task.get("remoteuser") or "")
-    remotehost = str(task.get("remotehost") or "")
-    remoteport = task.get("remoteport", 993)
-    security = str(task.get("security") or "plain")
-    task_label = str(task.get("name") or f"{remoteuser} -> {localuser}").strip()
-
-    ts_str = "unknown"
-    if last_ts is not None and last_ts > 0:
-        try:
-            ts_str = (
-                datetime.fromtimestamp(int(last_ts), tz=timezone.utc)
-                .replace(microsecond=0)
-                .isoformat()
-                .replace("+00:00", "Z")
-            )
-        except (OSError, OverflowError, ValueError):
-            ts_str = str(last_ts)
-
-    mod_display = f"{module_id} ({ui_name})" if ui_name else module_id
-    msg = EmailMessage()
-    msg["From"] = mail_from
-    msg["To"] = alert_to
-    msg["Subject"] = f"[NS8 Mail Toolbox] NS8 IMAP-Sync Task Failure Alert: {task_label}"
-    msg.set_content(
-        "Warning: An NS8 IMAP-Sync (ns8-imapsync) synchronization task reported a non-zero exit code.\n\n"
-        f"IMAP-Sync Module: {mod_display}\n"
-        f"Task:             {task_label} ({task_id})\n"
-        f"Remote Account:   {remoteuser} @ {remotehost}:{remoteport} ({security})\n"
-        f"Local Mailbox:    {localuser}\n"
-        f"Last Exit Code:   {exit_code}\n"
-        f"Last Sync Time:   {ts_str}\n\n"
-        f"Please inspect the task log in NS8 Cockpit under Mail Toolbox -> Connectors or {module_id} -> Tasks.\n",
-        cte="8bit",
+    sender_domain = resolve_sender_domain(alert_to, settings, base_map)
+    target_user = resolve_local_mailbox_user(alert_to, base_map)
+    raw_bytes, mail_from = build_imapsync_failure_alert_email(
+        module_id=module_id,
+        ui_name=ui_name,
+        task=task,
+        exit_code=exit_code,
+        last_ts=last_ts,
+        recipient_email=alert_to,
+        sender_domain=sender_domain,
+        tz_name=settings.runtime.timezone,
     )
     try:
-        smtp_policy = email.policy.SMTP.clone(max_line_length=998)
-        deliver_smtp_raw(
-            msg.as_bytes(policy=smtp_policy),
+        deliver_to_user_inbox_or_smtp(
+            raw_bytes,
             mail_from,
             alert_to,
+            target_user,
             settings.mail,
         )
         return True

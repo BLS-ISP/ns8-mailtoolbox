@@ -28,7 +28,7 @@ In small and medium-sized organizations running **NethServer 8 (`ns8-mail` + `ns
    - **Reply-Chain & Attachment Safety:** Rule precedence (`group` > `domain` > `default`), duplicate prevention (`append_once`, `first_only`, `always`), `below_reply` or `bottom` placement, and lossless handling of `multipart/mixed`, `multipart/alternative`, and `multipart/related` messages including PDF attachments and inline `cid:` images.
 
 3. **Daily Spam Quarantine Digest & Scanner-Safe Self-Service Release:**
-   - Inspects per-user `Junk` folders via Dovecot IMAP Master-User authentication and sends a clean localized (`EN` or `DE`) daily digest email at the configured local time (e.g. `07:30 Europe/Berlin`) **only** to users who received new spam messages.
+   - Inspects per-user `Junk` folders via lightweight Dovecot IMAP Master-User header scans (`BODY.PEEK[HEADER]`) and delivers a responsive, Carbon-styled localized (`EN` or `DE`) HTML + Plaintext (`quoted-printable`) daily digest directly into the user's `INBOX` via Dovecot Master-User IMAP `APPEND` at the configured local time (e.g. `07:30 Europe/Berlin`) **only** to users who received new spam messages — completely bypassing Rspamd false-positive spam scoring on digest summaries and preventing self-digest loops.
    - **Link-Scanner-Safe Two-Step Release:** `GET /api/quarantine/token/{token}` performs a non-consuming read-only preview so corporate email security scanners cannot accidentally trigger releases. Only an explicit user confirmation (`POST /api/quarantine/action`) moves the message from `Junk` to `INBOX` (triggering Dovecot `imapsieve` ham learning) and optionally adds the sender to the user's allowlist (`release_and_allow`).
 
 4. **Fast Rspamd Mail-Tracking Search (With Persistent SQLite History):**
@@ -38,7 +38,7 @@ In small and medium-sized organizations running **NethServer 8 (`ns8-mail` + `ns
 5. **External POP3/IMAP Mail Connectors, NS8 IMAP-Sync (`ns8-imapsync`) Bridge & Admin Alerts:**
    - Periodically fetches external mailboxes (`imaps`, `imap`, `pop3s`, `pop3`) with Fernet-encrypted credentials at rest (`APP_SECRET_KEY`), UID/UIDL deduplication (`leave_on_server` configurable), and local SMTP delivery.
    - **Automatic `ns8-imapsync` Sync Bridge:** Whenever one or more official **NS8 IMAP-Sync (`ns8-imapsync`)** instances (`imapsync1`, etc.) are installed on the cluster, their sync tasks are automatically discovered and displayed alongside native Mail Toolbox connectors in Cockpit (`Connectors` & `Status`) with direct Start, Stop, Live Log Viewer, and deep-link controls.
-   - Automatically sends a localized warning email (with a 24-hour alert cooldown) to `admin_alert_email` and flags the Cockpit status dashboard whenever a native POP3/IMAP connector or coupled `ns8-imapsync` task fails.
+   - Automatically delivers a responsive HTML + Plaintext warning email (via direct Dovecot Master-User `INBOX` `APPEND` for local mailboxes or SMTP fallback for external addresses, with a 24-hour alert cooldown) to `admin_alert_email` and flags the Cockpit status dashboard whenever a native POP3/IMAP connector or coupled `ns8-imapsync` task fails.
 
 ---
 
@@ -165,7 +165,7 @@ runagent -m mail1 python3 -c "import agent; agent.unset_env('POSTFIX_MILTERS')" 
 
 | Path | Description |
 | :--- | :--- |
-| [`./CHANGELOG.md`](./CHANGELOG.md) | Release history (`v1.0.0` through `v1.0.5`) in Keep a Changelog format |
+| [`./CHANGELOG.md`](./CHANGELOG.md) | Release history (`v1.0.0` through `v1.0.6`) in Keep a Changelog format |
 | [`./imageroot/README.md`](./imageroot/README.md) | NS8 rootless module agent, systemd user units, discovery/cache helpers, events, and all 27 NS8 actions |
 | [`./ui/README.md`](./ui/README.md) | NS8 Cockpit Admin UI (`Vue 2.7` + `@nethserver/ns8-ui-lib` + Carbon Design System, `EN \| DE`) |
 | [`./app/README.md`](./app/README.md) | Runtime `mail-toolbox-app` container (`FastAPI` `:8080`, `asyncio` Postfix Milter `:8090`, SQLite WAL) |
