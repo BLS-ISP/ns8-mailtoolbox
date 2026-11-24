@@ -12,15 +12,37 @@ import urllib.request
 from pathlib import Path
 
 
-def main() -> int:
-    raw = sys.stdin.read().strip()
-    payload = json.loads(raw) if raw else {"user": ""}
-    if payload.get("user") is None:
-        payload["user"] = ""
+EMPTY_DIGEST_RESULT = {
+    "users_checked": 0,
+    "digests_sent": 0,
+    "items_included": 0,
+}
 
-    web_tcp_port = os.environ["WEB_TCP_PORT"]
+
+def main() -> int:
+    payload: dict[str, str] = {"user": ""}
+    try:
+        raw = sys.stdin.read().strip()
+        if raw:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                payload["user"] = str(parsed.get("user") or "").strip()
+    except Exception:
+        payload = {"user": ""}
+
+    mail_module_uuid = os.environ.get("MAIL_MODULE_UUID", "").strip()
+    web_tcp_port = os.environ.get("WEB_TCP_PORT", "").strip()
     state_dir = Path(os.environ.get("AGENT_STATE_DIR", ".")).resolve()
-    token = (state_dir / "config" / "internal.token").read_text(encoding="utf-8").strip()
+    token_path = state_dir / "config" / "internal.token"
+
+    if not mail_module_uuid or not web_tcp_port or not token_path.is_file():
+        json.dump(EMPTY_DIGEST_RESULT, sys.stdout)
+        return 0
+
+    token = token_path.read_text(encoding="utf-8").strip()
+    if not token:
+        json.dump(EMPTY_DIGEST_RESULT, sys.stdout)
+        return 0
 
     req = urllib.request.Request(
         f"http://127.0.0.1:{web_tcp_port}/api/internal/quarantine/run-digest",
@@ -34,7 +56,7 @@ def main() -> int:
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=180) as resp:
             sys.stdout.write(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="replace")

@@ -1,6 +1,6 @@
 {
   "name": "ns8-mail-toolbox-portal",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "private": true,
   "type": "module",
   "description": "Delegatable Secretariat Web Portal for NS8 Mail Toolbox",

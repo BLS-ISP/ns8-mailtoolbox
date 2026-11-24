@@ -553,6 +553,7 @@ async def internal_get_quarantine(
     user: str = Query(default=""),
     search: str = Query(default=""),
     limit: int = Query(default=200, ge=1, le=1000),
+    force_refresh: bool = Query(default=False),
     _token: str = Depends(require_internal_token),
 ) -> dict[str, Any]:
     return await asyncio.to_thread(
@@ -560,6 +561,7 @@ async def internal_get_quarantine(
         user_filter=user,
         search=search,
         limit=limit,
+        force_refresh=force_refresh,
     )
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from email import message_from_bytes
 from email.message import Message
 from email.policy import default as default_email_policy
@@ -22,6 +23,7 @@ import socket
 import socketserver
 import struct
 import threading
+import time
 from typing import Any
 
 
@@ -476,12 +478,53 @@ class MockSmtpSubmissionServer:
 # ============================================================================
 
 
+_IMAP_MONTHS_FWD = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+_IMAP_MONTHS_REV = {m.lower(): idx for idx, m in enumerate(_IMAP_MONTHS_FWD, start=1)}
+
+
+def format_imap_internaldate(dt: datetime | None = None) -> str:
+    """Format a UTC datetime as an RFC 3501 English ASCII IMAP INTERNALDATE string."""
+    now_utc = (dt or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    mon = _IMAP_MONTHS_FWD[now_utc.month - 1]
+    return (
+        f"{now_utc.day:02d}-{mon}-{now_utc.year:04d} "
+        f"{now_utc.hour:02d}:{now_utc.minute:02d}:{now_utc.second:02d} +0000"
+    )
+
+
+def _parse_imap_date_token(raw_date: str) -> date | None:
+    """Parse `DD-Mon-YYYY` from an IMAP SEARCH criterion or INTERNALDATE value."""
+    m = re.search(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})", raw_date or "")
+    if not m:
+        return None
+    mon = _IMAP_MONTHS_REV.get(m.group(2).lower())
+    if mon is None:
+        return None
+    try:
+        return date(int(m.group(3)), mon, int(m.group(1)))
+    except ValueError:
+        return None
+
+
 @dataclass
 class ImapMessageItem:
     uid: int
     raw_bytes: bytes
     flags: set[str] = field(default_factory=set)
-    internaldate: str = "20-Nov-2026 06:15:00 +0000"
+    internaldate: str = field(default_factory=format_imap_internaldate)
 
 
 class MockImapServer:
@@ -493,15 +536,34 @@ class MockImapServer:
         self.lock = threading.Lock()
         self.accounts: dict[str, str] = {}  # direct LOGIN user -> password
         self.fail_login_users: set[str] = set()
+        self.fail_master_users: set[str] = set()
         self.fail_append_users: set[str] = set()
+        self.user_login_delays: dict[str, float] = {}
         # user -> folder -> list[ImapMessageItem]
         self.folders: dict[str, dict[str, list[ImapMessageItem]]] = {}
+        self.auth_attempts_log: list[str] = []
+        self.search_criteria_log: list[tuple[str, str, str]] = []
         self.append_log: list[tuple[str, str, int]] = []
         self.fetch_specs_log: list[tuple[str, str, str]] = []
+        self.fetch_commands_log: list[tuple[str, str, str, str]] = []
         self._next_uid: int = 100
         self._server: _ThreadedTCPServer | None = None
         self.host = "127.0.0.1"
         self.port = 0
+
+    def set_user_login_delay(self, username: str, delay_seconds: float) -> None:
+        with self.lock:
+            if delay_seconds > 0:
+                self.user_login_delays[username] = delay_seconds
+            else:
+                self.user_login_delays.pop(username, None)
+
+    def set_master_login_failure(self, username: str, fail: bool) -> None:
+        with self.lock:
+            if fail:
+                self.fail_master_users.add(username)
+            else:
+                self.fail_master_users.discard(username)
 
     def set_append_failure(self, username: str, fail: bool) -> None:
         with self.lock:
@@ -528,14 +590,15 @@ class MockImapServer:
         folder: str,
         raw_bytes: bytes,
         *,
-        internaldate: str = "20-Nov-2026 06:15:00 +0000",
+        internaldate: str | None = None,
     ) -> int:
+        eff_date = internaldate if internaldate is not None else format_imap_internaldate()
         with self.lock:
             self._next_uid += 1
             uid = self._next_uid
             ufolders = self.folders.setdefault(user, {"INBOX": [], "Junk": []})
             ufolders.setdefault(folder, []).append(
-                ImapMessageItem(uid=uid, raw_bytes=raw_bytes, internaldate=internaldate)
+                ImapMessageItem(uid=uid, raw_bytes=raw_bytes, internaldate=eff_date)
             )
             return uid
 
@@ -647,8 +710,15 @@ class MockImapServer:
 
                         if "*" in authcid:
                             target_u, master_u = authcid.rsplit("*", 1)
+                            with outer.lock:
+                                outer.auth_attempts_log.append(target_u)
+                                delay_s = outer.user_login_delays.get(target_u, 0.0)
+                                fail_master = target_u in outer.fail_master_users
+                            if delay_s > 0:
+                                time.sleep(delay_s)
                             if (
-                                master_u == outer.master_user
+                                not fail_master
+                                and master_u == outer.master_user
                                 and passwd == outer.master_password
                                 and target_u
                             ):
@@ -662,8 +732,12 @@ class MockImapServer:
                                 self._send(f"{tag} NO [AUTHENTICATIONFAILED] Master auth failed.")
                         else:
                             with outer.lock:
+                                outer.auth_attempts_log.append(authcid)
+                                delay_s = outer.user_login_delays.get(authcid, 0.0)
                                 should_fail = authcid in outer.fail_login_users
                                 exp_pw = outer.accounts.get(authcid)
+                            if delay_s > 0:
+                                time.sleep(delay_s)
                             if not should_fail and exp_pw is not None and exp_pw == passwd:
                                 authed_user = authcid
                                 self._send(f"{tag} OK Logged in.")
@@ -680,7 +754,17 @@ class MockImapServer:
                         u_pass = outer._unquote_imap(tokens[1])
                         if "*" in u_name:
                             target_u, master_u = u_name.rsplit("*", 1)
-                            if master_u == outer.master_user and u_pass == outer.master_password:
+                            with outer.lock:
+                                outer.auth_attempts_log.append(target_u)
+                                delay_s = outer.user_login_delays.get(target_u, 0.0)
+                                fail_master = target_u in outer.fail_master_users
+                            if delay_s > 0:
+                                time.sleep(delay_s)
+                            if (
+                                not fail_master
+                                and master_u == outer.master_user
+                                and u_pass == outer.master_password
+                            ):
                                 authed_user = target_u
                                 with outer.lock:
                                     outer.folders.setdefault(
@@ -691,8 +775,12 @@ class MockImapServer:
                                 self._send(f"{tag} NO [AUTHENTICATIONFAILED] Authentication failed.")
                         else:
                             with outer.lock:
+                                outer.auth_attempts_log.append(u_name)
+                                delay_s = outer.user_login_delays.get(u_name, 0.0)
                                 should_fail = u_name in outer.fail_login_users
                                 exp_pw = outer.accounts.get(u_name)
+                            if delay_s > 0:
+                                time.sleep(delay_s)
                             if not should_fail and exp_pw is not None and exp_pw == u_pass:
                                 authed_user = u_name
                                 self._send(f"{tag} OK Logged in.")
@@ -758,7 +846,7 @@ class MockImapServer:
                             ).strip()
 
                         dt_match = re.search(r'"([^"]+)"', rem_meta)
-                        app_date = dt_match.group(1) if dt_match else "24-Nov-2026 07:30:00 +0000"
+                        app_date = dt_match.group(1) if dt_match else format_imap_internaldate()
 
                         with outer.lock:
                             should_fail_append = authed_user in outer.fail_append_users
@@ -844,12 +932,41 @@ class MockImapServer:
 
                         if sub_cmd == "SEARCH":
                             with outer.lock:
+                                outer.search_criteria_log.append(
+                                    (authed_user, selected_folder, sub_rest)
+                                )
                                 items = list(outer.folders[authed_user][selected_folder])
                             out_ids: list[str] = []
                             upper_crit = sub_rest.upper()
+                            since_m = re.search(
+                                r'\bSINCE\s+"?(\d{1,2}-[A-Za-z]{3}-\d{4})"?',
+                                sub_rest,
+                                flags=re.I,
+                            )
+                            before_m = re.search(
+                                r'\bBEFORE\s+"?(\d{1,2}-[A-Za-z]{3}-\d{4})"?',
+                                sub_rest,
+                                flags=re.I,
+                            )
+                            since_date = _parse_imap_date_token(since_m.group(1)) if since_m else None
+                            before_date = _parse_imap_date_token(before_m.group(1)) if before_m else None
                             for idx, m in enumerate(items, start=1):
                                 if "UNDELETED" in upper_crit and "\\Deleted" in m.flags:
                                     continue
+                                if since_date is not None or before_date is not None:
+                                    m_date = _parse_imap_date_token(m.internaldate)
+                                    if (
+                                        since_date is not None
+                                        and m_date is not None
+                                        and m_date < since_date
+                                    ):
+                                        continue
+                                    if (
+                                        before_date is not None
+                                        and m_date is not None
+                                        and m_date >= before_date
+                                    ):
+                                        continue
                                 out_ids.append(str(m.uid if by_uid else idx))
                             id_str = (" " + " ".join(out_ids)) if out_ids else ""
                             self._send(f"* SEARCH{id_str}")
@@ -862,6 +979,9 @@ class MockImapServer:
                             spec_upper = spec.upper()
                             with outer.lock:
                                 outer.fetch_specs_log.append((authed_user, selected_folder, spec))
+                                outer.fetch_commands_log.append(
+                                    (authed_user, selected_folder, seq_spec, spec)
+                                )
                                 items = list(outer.folders[authed_user][selected_folder])
                             matched = outer._match_seq_or_uid(items, seq_spec, by_uid=by_uid)
 

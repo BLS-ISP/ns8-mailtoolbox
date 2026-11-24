@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [1.0.7] - 2026-11-24
+
+### Added
+- Optional `{"force_refresh": true}` input schema (`imageroot/actions/list-quarantine/validate-input.json`) and `?force_refresh=true` backend query parameter (`GET /api/internal/quarantine`), paired with a 30-second in-memory quarantine scan cache invalidated automatically on release, digest, or allowlist rescue operations.
+
+### Changed
+- **High-Throughput Multi-Mailbox Quarantine & Digest Scanning (`quarantine_service.py`):**
+  - Replaced sequential N+1 per-message IMAP `FETCH` calls with chunked **batch `UID FETCH uid1,uid2,... (UID BODY.PEEK[HEADER])`** requests (50 UIDs per batch), newest-`max_uids` slicing, and `SINCE` date-window filtering (`since_days=14` for daily digests).
+  - Parallelized `list_admin_quarantine` and `run_quarantine_digest` across mailboxes via `ThreadPoolExecutor(max_workers=6)` with a 20-second soft wall-clock deadline on admin scans so slow or hung mailboxes never time out the UI.
+  - Lazy-loaded the Cockpit **Quarantine** tab in `ui/src/views/MailTracking.vue` so opening Tab 1 (`Mail Tracking` search) no longer triggers an eager IMAP quarantine scan, and increased `list-quarantine/20read` (`90`s) and `run-digest-now/20write` (`180`s) HTTP proxy timeouts.
+
+### Fixed
+- **Eliminated `list-quarantine` Timeouts on Active Directory / Multi-Mailbox Servers:**
+  - `build_base_mailbox_map` (`app/backend/service.py`) now treats `mailboxes_cache.json` (`ns8-mail` `list-user-mailboxes`) as authoritative when populated instead of appending non-mailbox AD accounts (`Guest`, `krbtgt`, service/VPN accounts) that triggered Dovecot's 2-second authentication-failure tarpit, while `list_admin_quarantine`, `run_quarantine_digest`, and `rescue_allowlisted_junk_messages` skip disabled mailboxes (`enabled: false`) and `open_master_imap` avoids duplicate login retries on `AUTHENTICATIONFAILED`.
+  - `check_and_run_scheduled_digest` (`app/backend/reconciler.py`) now records `digest_last_scheduled_date` **only after** `run_quarantine_digest()` succeeds and applies a 15-minute error retry cooldown so transient failures at the scheduled time retry automatically instead of skipping the day.
+  - Guarded unconfigured module state in `imageroot/actions/run-digest-now/20write` to return an empty summary cleanly instead of raising `KeyError`.
+
+---
+
 ## [1.0.6] - 2026-11-24
 
 ### Added
@@ -101,6 +120,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - **External POP3/IMAP Mail Connectors** with Fernet-encrypted credentials at rest, UID/UIDL deduplication, connection testing, manual sync, and failure alert emails.
   - Complete NS8 rootless lifecycle support: online SQLite Restic backups (`module-dump-state`), `restore-module`, `clone-module` (cluster node migration), `update-module.d/20restart`, cluster event handlers (`mail-settings-changed`, `user-domain-changed`), and clean Sieve restoration on `destroy-module`.
 
+[1.0.7]: https://github.com/BLS-ISP/ns8-mailtoolbox/releases/tag/v1.0.7
 [1.0.6]: https://github.com/BLS-ISP/ns8-mailtoolbox/releases/tag/v1.0.6
 [1.0.5]: https://github.com/BLS-ISP/ns8-mailtoolbox/releases/tag/v1.0.5
 [1.0.4]: https://github.com/BLS-ISP/ns8-mailtoolbox/releases/tag/v1.0.4

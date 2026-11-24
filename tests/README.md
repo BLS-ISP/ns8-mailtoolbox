@@ -19,7 +19,8 @@ tests/
 ├── test_phase2_phase3_e2e.py                     # Phases 2–3 + v1.0.1 E2E: Milter, Quarantine, Rspamd TLS/Auth, Connectors & AD
 ├── test_v104_imapsync_bridge_e2e.py              # v1.0.4 E2E: NS8 IMAP-Sync (ns8-imapsync) bridge, Node JS & 24h SMTP alerts
 ├── test_v105_notification_and_cache_ttl_e2e.py   # v1.0.5 E2E: Silent NS8 sub-tasks & 300s/3600s smart TTL caching
-└── test_v106_system_emails_e2e.py                # v1.0.6 E2E: 60-item SOGo digest, quoted-printable DOM, IMAP APPEND & alerts
+├── test_v106_system_emails_e2e.py                # v1.0.6 E2E: 60-item SOGo digest, quoted-printable DOM, IMAP APPEND & alerts
+└── test_v107_quarantine_scale_and_timeout_e2e.py # v1.0.7 E2E: ISP-scale batch UID FETCH, AD non-mailbox skip, 30s cache & digest retry
 ```
 
 Companion backend unit and service test suites in [`../app/backend/tests/`](../app/backend/tests/):
@@ -36,6 +37,7 @@ Companion backend unit and service test suites in [`../app/backend/tests/`](../a
 | `test_v101_rspamd_tls_and_ad_groups.py` | Rspamd URL normalization, self-signed TLS & HTTP Basic Auth, AD multi-level nested groups, `primaryGroupID` / `objectSid` RIDs, UPN logins, and `/api/internal/groups` |
 | `test_v104_imapsync_bridge.py` | `imapsync_cache.json` missing/corrupt/populated handling and 24-hour-cooldown `check_imapsync_bridge_alerts()` recovery state machine |
 | `test_v106_email_overhaul.py` | `email_templates.py` Carbon HTML+Plaintext builders, `quoted-printable` line safety, `ad.`/`ldap.` sender domain stripping, `BODY.PEEK[HEADER]` scans, and direct `INBOX` IMAP `APPEND` with SMTP fallback |
+| `test_v107_quarantine_perf.py` | Authoritative `mailboxes_cache.json` AD non-mailbox exclusion, chunked `50`-UID batch `UID FETCH`, `SINCE DD-Mon-YYYY` digest filter, 30s quarantine cache (`force_refresh`), 20s soft scan deadline, and 15m scheduled digest retry backoff |
 
 ---
 
@@ -58,12 +60,12 @@ Companion backend unit and service test suites in [`../app/backend/tests/`](../a
 | `test_ui_tasks_set_is_notification_hidden` | Verifies all `createModuleTaskForApp` / `createClusterTaskForApp` calls across `ui/src/**` except `configure-module` in `Settings.vue` (`40/41`) set `isNotificationHidden: true`. |
 | `test_ui_carbon_icons_registered` | Verifies every `@carbon/icons-vue` tag in `<template>` is registered in `components` and every `:icon` prop is exposed in `data()` / `computed`. |
 | `test_ui_and_portal_i18n_translations_and_fallback` | Enforces 100% `en`/`de` key parity in both `ui/public/i18n/{en,de}/translation.json` and `app/frontend/src/i18n/messages.js`, mandatory NS8 keys, strict English (`en`) default locale without `navigator.language` override, and `<html lang="en">` in `app/frontend/index.html`. |
-| `test_contract_cockpit_ui_to_imageroot_actions_and_schemas` | Cross-checks all 23 Cockpit module actions, `Settings.vue` / `Signatures.vue` / `Connectors.vue` / `Status.vue` fields, and ensures external `ns8-imapsync` bridge tasks (`list-tasks`, `start-task`, `stop-task`, `get-log`) target `targetModuleId` rather than `this.instanceName`. |
+| `test_contract_cockpit_ui_to_imageroot_actions_and_schemas` | Cross-checks all 23 Cockpit module actions, `Settings.vue` / `Signatures.vue` / `Connectors.vue` / `Status.vue` fields, `MailTracking.vue` lazy quarantine loading (`onTabSelected` / `force_refresh`), and ensures external `ns8-imapsync` bridge tasks (`list-tasks`, `start-task`, `stop-task`, `get-log`) target `targetModuleId` rather than `this.instanceName`. |
 | `test_release_artifacts_license_and_ns8_repo_workflow` | Verifies `GPL-3.0` `LICENSE`, `.github/workflows/publish-ns8-repo.yml`, and clean Sieve cleanup in `destroy-module/20destroy`. |
-| `test_github_release_alignment_and_english_readme` | Audits all **7 repository Markdown files** (`README.md`, `CHANGELOG.md`, `imageroot/README.md`, `ui/README.md`, `app/README.md`, `app/frontend/README.md`, `tests/README.md`) for 100% English-only prose, valid relative links, `BLS-ISP` OCI/Software Center metadata alignment, and `1.0.6` version consistency. |
+| `test_github_release_alignment_and_english_readme` | Audits all **7 repository Markdown files** (`README.md`, `CHANGELOG.md`, `imageroot/README.md`, `ui/README.md`, `app/README.md`, `app/frontend/README.md`, `tests/README.md`) for 100% English-only prose, valid relative links, `BLS-ISP` OCI/Software Center metadata alignment, and `1.0.7` version consistency. |
 | `test_contract_imageroot_to_backend_internal_routes` | Verifies every `/api/internal/*` URL called in `imageroot/` matches a registered FastAPI route in `app.backend.main:app`. |
 | `test_contract_portal_frontend_to_backend_api_routes` | Verifies every `/api/*` endpoint called in `app/frontend/src/**` matches a registered FastAPI route. |
-| `test_jsonschema_ui_inputs_and_live_backend_outputs` | Validates all **40 Draft-07 JSON schemas** (`validate-input.json` & `validate-output.json`), UI payloads (including `null` / `{}` / `force_refresh` on `list-mailboxes` & `list-connectors`), and live FastAPI `TestClient` responses. |
+| `test_jsonschema_ui_inputs_and_live_backend_outputs` | Validates all **41 Draft-07 JSON schemas** (`validate-input.json` & `validate-output.json`), UI payloads (including `null` / `{}` / `force_refresh` on `list-mailboxes`, `list-connectors` & `list-quarantine`), and live FastAPI `TestClient` responses. |
 
 ---
 
@@ -83,6 +85,8 @@ Companion backend unit and service test suites in [`../app/backend/tests/`](../a
    - Verifies `sync-mailboxes-cache` (`--min-age 300`, `--skip-imapsync`, `only_coupled=True`), `list-mailboxes/20read`, `list-connectors/20read`, `get-configuration/20read`, and `discover-mail-instance/20read` execute **zero** child `agent.tasks.run` calls on warm cache hits and pass `extra={'isNotificationHidden': True}` on live/forced refreshes.
 5. **`tests/test_v106_system_emails_e2e.py`**:
    - Reproduces the 60-item `genera@bls-isp.net` (`ad.bls-isp.net`) SOGo production scenario over real TCP `MockImapServer` + `MockSmtpSubmissionServer` (verifying old `Junk` digest loop immunity, 50-item cap + overflow banner, `quoted-printable` wire lines, `html.parser` strict tag balance with zero links outside `<table>`, public `@bls-isp.net` sender domain, and direct `INBOX` IMAP `APPEND`), plus multipart HTML + Plaintext Connector and `ns8-imapsync` failure alerts across local `INBOX` `APPEND` and external SMTP fallback.
+6. **`tests/test_v107_quarantine_scale_and_timeout_e2e.py`**:
+   - Simulates a multi-mailbox ISP / Samba AD server over real TCP `MockImapServer` (`15` enabled mailboxes + `5` disabled mailboxes + `15` non-mailbox AD service/VPN accounts, plus `250` spam messages in `Junk` split across recent and `>30`-day-old `INTERNALDATE` entries), verifying `imageroot/actions/list-quarantine/20read` sub-second chunked batch `UID FETCH` (`<=2` FETCH commands instead of `250`, `0` IMAP auth attempts on non-mailbox AD or disabled users, `<50`ms 30s cache hit vs `force_refresh: true` live rescan), `imageroot/actions/run-digest-now/20write` `SINCE` 14-day filtering + unconfigured `exit 0` guard, and `check_and_run_scheduled_digest` transient-failure retry after the 15-minute cooldown.
 
 ---
 

@@ -22,7 +22,7 @@ Configured in [`../build-images.sh`](../build-images.sh):
 
 ```text
 imageroot/
-├── actions/                  # 27 NS8 module actions (4 lifecycle + 23 UI/API) & 40 Draft-07 JSON schemas
+├── actions/                  # 27 NS8 module actions (4 lifecycle + 23 UI/API) & 41 Draft-07 JSON schemas
 ├── bin/                      # Executable discovery, cache sync, health-check & Restic backup helpers
 │   ├── discover-services     # Resolves ns8-mail TCP providers, Podman 4/5 gateway, ldapproxy & master.creds
 │   ├── toolbox_discovery.py  # Shared Rspamd URL discovery (3600s cache) & AD/OpenLDAP group/schema resolver
@@ -128,7 +128,7 @@ imageroot/
 | `save-signature` | `20write` | `validate-input.json`, `validate-output.json` | Creates or updates a signature rule via `POST /api/internal/signatures` |
 | `delete-signature` | `20write` | `validate-input.json`, `validate-output.json` | Deletes a signature rule via `POST /api/internal/signatures/delete` |
 | `preview-signature` | `20read` | `validate-input.json`, `validate-output.json` | Renders live HTML & plaintext signature preview with AD/LDAP user attributes via `POST /api/internal/signatures/preview` |
-| `list-quarantine` | `20read` | `validate-output.json` | Lists quarantined spam messages and sender allowlist entries via `GET /api/internal/quarantine` |
+| `list-quarantine` | `20read` | `validate-input.json`, `validate-output.json` | Lists quarantined spam messages and sender allowlist entries (`force_refresh` supported) via `GET /api/internal/quarantine` |
 | `release-quarantine` | `20write` | `validate-input.json`, `validate-output.json` | Moves quarantined message from `Junk` to `INBOX` (with optional allowlist) via `POST /api/internal/quarantine/release` |
 | `run-digest-now` | `20write` | `validate-input.json`, `validate-output.json` | Triggers immediate spam quarantine digest email delivery via `POST /api/internal/quarantine/run-digest` |
 | `delete-allowlist` | `20write` | `validate-input.json`, `validate-output.json` | Removes a sender allowlist entry via `POST /api/internal/allowlist/delete` |

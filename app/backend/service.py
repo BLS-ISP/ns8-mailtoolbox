@@ -130,26 +130,27 @@ def build_base_mailbox_map(settings: AppSettings | None = None) -> dict[str, dic
             "postfix_forwards": postfix_forwards,
         }
 
-    for lu in ldap_users:
-        if lu.user.lower() in seen_lower:
-            continue
-        # Exclude default AD Administrator account unless explicitly listed in mailboxes_cache.json
-        if lu.user.lower() == "administrator" and cache_items:
-            continue
-        primary_mail = lu.mail or (f"{lu.user}@{cfg.ldap.domain}" if cfg.ldap.domain else "")
-        merged[lu.user] = {
-            "user": lu.user,
-            "display_name": lu.display_name or lu.user,
-            "given_name": lu.given_name,
-            "sn": lu.sn,
-            "mail": primary_mail,
-            "aliases": [],
-            "department": lu.department,
-            "title": lu.title,
-            "groups": list(lu.groups),
-            "enabled": True,
-            "postfix_forwards": [],
-        }
+    if not cache_items:
+        for lu in ldap_users:
+            if lu.user.lower() in seen_lower:
+                continue
+            # Exclude default AD Administrator account when falling back to directory listing
+            if lu.user.lower() == "administrator":
+                continue
+            primary_mail = lu.mail or (f"{lu.user}@{cfg.ldap.domain}" if cfg.ldap.domain else "")
+            merged[lu.user] = {
+                "user": lu.user,
+                "display_name": lu.display_name or lu.user,
+                "given_name": lu.given_name,
+                "sn": lu.sn,
+                "mail": primary_mail,
+                "aliases": [],
+                "department": lu.department,
+                "title": lu.title,
+                "groups": list(lu.groups),
+                "enabled": True,
+                "postfix_forwards": [],
+            }
 
     return merged
 

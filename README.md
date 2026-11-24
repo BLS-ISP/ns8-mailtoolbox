@@ -28,7 +28,7 @@ In small and medium-sized organizations running **NethServer 8 (`ns8-mail` + `ns
    - **Reply-Chain & Attachment Safety:** Rule precedence (`group` > `domain` > `default`), duplicate prevention (`append_once`, `first_only`, `always`), `below_reply` or `bottom` placement, and lossless handling of `multipart/mixed`, `multipart/alternative`, and `multipart/related` messages including PDF attachments and inline `cid:` images.
 
 3. **Daily Spam Quarantine Digest & Scanner-Safe Self-Service Release:**
-   - Inspects per-user `Junk` folders via lightweight Dovecot IMAP Master-User header scans (`BODY.PEEK[HEADER]`) and delivers a responsive, Carbon-styled localized (`EN` or `DE`) HTML + Plaintext (`quoted-printable`) daily digest directly into the user's `INBOX` via Dovecot Master-User IMAP `APPEND` at the configured local time (e.g. `07:30 Europe/Berlin`) **only** to users who received new spam messages — completely bypassing Rspamd false-positive spam scoring on digest summaries and preventing self-digest loops.
+   - Scans active `ns8-mail` mailboxes in parallel (`ThreadPoolExecutor`) using chunked **batch Dovecot Master-User IMAP `UID FETCH ... (UID BODY.PEEK[HEADER])`** queries (skipping non-mailbox AD accounts and disabled mailboxes) and delivers a responsive, Carbon-styled localized (`EN` or `DE`) HTML + Plaintext (`quoted-printable`) daily digest directly into the user's `INBOX` via IMAP `APPEND` at the configured local time (e.g. `07:30 Europe/Berlin`, with automatic retry on transient errors) **only** to users who received new spam messages — bypassing Rspamd false-positive spam scoring and preventing self-digest loops.
    - **Link-Scanner-Safe Two-Step Release:** `GET /api/quarantine/token/{token}` performs a non-consuming read-only preview so corporate email security scanners cannot accidentally trigger releases. Only an explicit user confirmation (`POST /api/quarantine/action`) moves the message from `Junk` to `INBOX` (triggering Dovecot `imapsieve` ham learning) and optionally adds the sender to the user's allowlist (`release_and_allow`).
 
 4. **Fast Rspamd Mail-Tracking Search (With Persistent SQLite History):**
@@ -55,7 +55,7 @@ flowchart TB
 
     subgraph Module["NS8 Rootless Module: mail-toolbox"]
         TRF["Traefik @node"]
-        AG["NS8 Module Agent<br/>(23 UI/API + 4 Lifecycle = 27 Actions<br/>40 Draft-07 Schemas, Silent Sub-Tasks)"]
+        AG["NS8 Module Agent<br/>(23 UI/API + 4 Lifecycle = 27 Actions<br/>41 Draft-07 Schemas, Silent Sub-Tasks)"]
         CACHE[("Smart TTL Caches<br/>mailboxes / imapsync (300s)<br/>discovery (3600s) + 60m Timer")]
         APP["mail-toolbox-app Container<br/>FastAPI :8080 + Asyncio Milter :8090<br/>60s SQLite Tick + 300s Sieve/IMAP Reconcile"]
         DB[("SQLite WAL<br/>toolbox.sqlite")]
@@ -165,7 +165,7 @@ runagent -m mail1 python3 -c "import agent; agent.unset_env('POSTFIX_MILTERS')" 
 
 | Path | Description |
 | :--- | :--- |
-| [`./CHANGELOG.md`](./CHANGELOG.md) | Release history (`v1.0.0` through `v1.0.6`) in Keep a Changelog format |
+| [`./CHANGELOG.md`](./CHANGELOG.md) | Release history (`v1.0.0` through `v1.0.7`) in Keep a Changelog format |
 | [`./imageroot/README.md`](./imageroot/README.md) | NS8 rootless module agent, systemd user units, discovery/cache helpers, events, and all 27 NS8 actions |
 | [`./ui/README.md`](./ui/README.md) | NS8 Cockpit Admin UI (`Vue 2.7` + `@nethserver/ns8-ui-lib` + Carbon Design System, `EN \| DE`) |
 | [`./app/README.md`](./app/README.md) | Runtime `mail-toolbox-app` container (`FastAPI` `:8080`, `asyncio` Postfix Milter `:8090`, SQLite WAL) |

@@ -10,6 +10,11 @@ senders from `Junk` to `INBOX`.
 
 from __future__ import annotations
 
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    TimeoutError as FuturesTimeoutError,
+    as_completed,
+)
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import email
@@ -20,6 +25,7 @@ import logging
 import re
 import secrets
 import smtplib
+import threading
 import time
 from typing import Any, Callable, Iterator
 
@@ -50,6 +56,28 @@ logger = logging.getLogger(__name__)
 _SPAMD_SCORE_RE = re.compile(r"\[\s*(-?\d+(?:\.\d+)?)\s*/\s*-?\d+(?:\.\d+)?\s*\]")
 _SPAM_STATUS_SCORE_RE = re.compile(r"score=(-?\d+(?:\.\d+)?)", re.IGNORECASE)
 _PLAIN_FLOAT_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)")
+_IMAP_UID_TOKEN_RE = re.compile(rb"\bUID\s+(\d+)\b", re.IGNORECASE)
+_IMAP_MONTHS_ASCII = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+_FETCH_BATCH_CHUNK_SIZE = 50
+_QUARANTINE_MAX_WORKERS = 6
+_QUARANTINE_CACHE_TTL_SECONDS = 30.0
+_QUARANTINE_SCAN_SOFT_DEADLINE_SECONDS = 20.0
+
+_quarantine_cache_lock = threading.Lock()
+_quarantine_scan_cache: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
 
 ImapFactory = Callable[[str, MailSettings], Any]
 SmtpSenderFn = Callable[[bytes, str, str, MailSettings], None]
@@ -58,10 +86,17 @@ _custom_imap_factory: ImapFactory | None = None
 _custom_smtp_sender: SmtpSenderFn | None = None
 
 
+def clear_quarantine_cache() -> None:
+    """Invalidate the 30-second in-memory admin quarantine scan cache."""
+    with _quarantine_cache_lock:
+        _quarantine_scan_cache.clear()
+
+
 def set_imap_master_factory(factory: ImapFactory | None) -> None:
     """Override Dovecot Master-User IMAP client creation (for tests)."""
     global _custom_imap_factory
     _custom_imap_factory = factory
+    clear_quarantine_cache()
 
 
 def set_smtp_sender(sender: SmtpSenderFn | None) -> None:
@@ -71,7 +106,12 @@ def set_smtp_sender(sender: SmtpSenderFn | None) -> None:
 
 
 @contextmanager
-def open_master_imap(target_user: str, mail_cfg: MailSettings) -> Iterator[Any]:
+def open_master_imap(
+    target_user: str,
+    mail_cfg: MailSettings,
+    *,
+    timeout: float = 6.0,
+) -> Iterator[Any]:
     """Authenticate to Dovecot IMAP as `target_user*master_user` via SASL PLAIN."""
     if _custom_imap_factory is not None:
         conn = _custom_imap_factory(target_user, mail_cfg)
@@ -87,10 +127,11 @@ def open_master_imap(target_user: str, mail_cfg: MailSettings) -> Iterator[Any]:
     if not mail_cfg.host or not mail_cfg.master_password:
         raise RuntimeError("Dovecot IMAP host or master credentials not configured")
 
+    sock_timeout = max(0.5, float(timeout))
     if int(mail_cfg.imap_port) == 993:
-        conn = imaplib.IMAP4_SSL(mail_cfg.host, int(mail_cfg.imap_port), timeout=10.0)
+        conn = imaplib.IMAP4_SSL(mail_cfg.host, int(mail_cfg.imap_port), timeout=sock_timeout)
     else:
-        conn = imaplib.IMAP4(mail_cfg.host, int(mail_cfg.imap_port), timeout=10.0)
+        conn = imaplib.IMAP4(mail_cfg.host, int(mail_cfg.imap_port), timeout=sock_timeout)
 
     try:
         auth_bytes = (
@@ -99,7 +140,13 @@ def open_master_imap(target_user: str, mail_cfg: MailSettings) -> Iterator[Any]:
         try:
             conn.authenticate("PLAIN", lambda _challenge: auth_bytes)
         except imaplib.IMAP4.error as auth_exc:
-            if "BAD" in str(auth_exc).upper() or "UNKNOWN" in str(auth_exc).upper():
+            err_upper = str(auth_exc).upper()
+            stripped_cmd = err_upper.replace("AUTHENTICATE", "")
+            if (
+                ("BAD" in err_upper or "UNKNOWN" in err_upper)
+                and "AUTHENTICATIONFAILED" not in err_upper
+                and "AUTH" not in stripped_cmd
+            ):
                 conn.login(f"{target_user}*{mail_cfg.master_user}", mail_cfg.master_password)
             else:
                 raise
@@ -282,24 +329,104 @@ def _is_toolbox_system_email(
     return False
 
 
+def _format_imap_since_date(days: int) -> str:
+    """Format an RFC 3501 English ASCII `DD-Mon-YYYY` date string (`SINCE` criterion)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))).date()
+    mon = _IMAP_MONTHS_ASCII[cutoff.month - 1]
+    return f"{cutoff.day:02d}-{mon}-{cutoff.year:04d}"
+
+
+def _fetch_uids_headers_batch(
+    imap: Any,
+    uids: list[str],
+    chunk_size: int = _FETCH_BATCH_CHUNK_SIZE,
+) -> dict[str, bytes]:
+    """Fetch headers for `uids` in chunks of 50 via `(UID BODY.PEEK[HEADER])`, with per-UID fallback."""
+    results: dict[str, bytes] = {}
+    if not uids:
+        return results
+
+    step = max(1, int(chunk_size))
+    for start in range(0, len(uids), step):
+        chunk = [str(u) for u in uids[start : start + step] if str(u)]
+        if not chunk:
+            continue
+        chunk_set = set(chunk)
+        try:
+            f_typ, f_data = imap.uid("FETCH", ",".join(chunk), "(UID BODY.PEEK[HEADER])")
+            if f_typ == "OK" and f_data:
+                for part in f_data:
+                    if not (
+                        isinstance(part, tuple)
+                        and len(part) >= 2
+                        and isinstance(part[1], (bytes, bytearray))
+                        and part[1]
+                    ):
+                        continue
+                    meta_bytes = (
+                        bytes(part[0])
+                        if isinstance(part[0], (bytes, bytearray))
+                        else str(part[0]).encode("ascii", errors="ignore")
+                    )
+                    m_uid = _IMAP_UID_TOKEN_RE.search(meta_bytes)
+                    if m_uid:
+                        u_str = m_uid.group(1).decode("ascii")
+                        if u_str in chunk_set:
+                            results[u_str] = bytes(part[1])
+                    elif len(chunk) == 1:
+                        lead_m = re.match(rb"^\s*(\d+)\b", meta_bytes)
+                        if lead_m and lead_m.group(1).decode("ascii") == chunk[0]:
+                            results[chunk[0]] = bytes(part[1])
+        except Exception:
+            pass
+
+        for uid in chunk:
+            if uid not in results:
+                raw_single = _fetch_uid_header_bytes(imap, uid)
+                if raw_single:
+                    results[uid] = raw_single
+
+    return results
+
+
 def fetch_user_junk_items(
     user: str,
     recipient_email: str,
     mail_cfg: MailSettings,
+    *,
+    max_uids: int = 100,
+    since_days: int | None = None,
+    imap_timeout: float = 5.0,
 ) -> list[dict[str, Any]]:
-    """Read message headers currently sitting in `user`'s `Junk` IMAP folder."""
+    """Read recent message headers currently sitting in `user`'s `Junk` IMAP folder."""
     items: list[dict[str, Any]] = []
-    with open_master_imap(user, mail_cfg) as imap:
+    with open_master_imap(user, mail_cfg, timeout=imap_timeout) as imap:
         typ, _ = imap.select(mail_cfg.spam_folder, readonly=True)
         if typ != "OK":
             return []
-        s_typ, s_data = imap.uid("SEARCH", None, "ALL")
+
+        s_typ = "NO"
+        s_data: Any = None
+        if since_days is not None and int(since_days) > 0:
+            since_str = _format_imap_since_date(int(since_days))
+            try:
+                s_typ, s_data = imap.uid("SEARCH", None, "SINCE", since_str)
+            except Exception:
+                s_typ = "NO"
+        if s_typ != "OK":
+            s_typ, s_data = imap.uid("SEARCH", None, "ALL")
         if s_typ != "OK" or not s_data or not s_data[0]:
             return []
 
         raw_uids = s_data[0].decode("ascii", errors="ignore").split()
+        if not raw_uids:
+            return []
+        if max_uids and int(max_uids) > 0 and len(raw_uids) > int(max_uids):
+            raw_uids = raw_uids[-int(max_uids) :]
+
+        hdr_map = _fetch_uids_headers_batch(imap, raw_uids)
         for uid in raw_uids:
-            raw_msg = _fetch_uid_header_bytes(imap, uid)
+            raw_msg = hdr_map.get(str(uid))
             if not raw_msg:
                 continue
             parsed = email.message_from_bytes(raw_msg, policy=email.policy.default)
@@ -387,8 +514,29 @@ def move_junk_to_inbox(
         return True
 
 
+def _resolve_public_mailbox_email(meta: dict[str, Any], fallback_domain: str) -> str:
+    u_name = str(meta.get("user") or "").strip()
+    raw_mb_mail = str(meta.get("mail") or "").strip()
+    raw_mb_dom = raw_mb_mail.split("@", 1)[1].strip().lower() if "@" in raw_mb_mail else ""
+    if not raw_mb_mail or (raw_mb_dom.startswith(("ad.", "ldap.")) and raw_mb_dom.count(".") >= 2):
+        public_alias = next(
+            (
+                str(a).strip()
+                for a in (meta.get("aliases") or [])
+                if "@" in str(a)
+                and not str(a).split("@", 1)[1].strip().lower().startswith(("ad.", "ldap."))
+            ),
+            "",
+        )
+        if public_alias:
+            return public_alias
+        return f"{u_name}@{fallback_domain}" if fallback_domain else (raw_mb_mail or u_name)
+    return raw_mb_mail
+
+
 def rescue_allowlisted_junk_messages(settings: AppSettings | None = None) -> int:
     """Move any Junk messages sent by allowlisted senders into the user's INBOX."""
+    clear_quarantine_cache()
     cfg = settings or get_settings()
     if not cfg.mail.host or not cfg.mail.master_password:
         return 0
@@ -397,14 +545,23 @@ def rescue_allowlisted_junk_messages(settings: AppSettings | None = None) -> int
     if not allow_entries:
         return 0
 
+    try:
+        base_map = build_base_mailbox_map(cfg)
+    except Exception:
+        base_map = {}
+    base_by_lower = {k.lower(): v for k, v in base_map.items()}
+
     by_user: dict[str, set[str]] = {}
     for entry in allow_entries:
         by_user.setdefault(entry["user"], set()).add(entry["sender_email"].strip().lower())
 
     rescued = 0
     for user, allowed_senders in by_user.items():
+        mb_meta = base_by_lower.get(user.lower())
+        if base_by_lower and (mb_meta is None or not mb_meta.get("enabled", True)):
+            continue
         try:
-            junk_items = fetch_user_junk_items(user, user, cfg.mail)
+            junk_items = fetch_user_junk_items(user, user, cfg.mail, max_uids=100, imap_timeout=5.0)
             for item in junk_items:
                 norm_sender = parseaddr(item["sender"])[1].strip().lower() or item["sender"].strip().lower()
                 if norm_sender in allowed_senders:
@@ -425,11 +582,14 @@ def rescue_allowlisted_junk_messages(settings: AppSettings | None = None) -> int
                         )
         except Exception as exc:
             logger.debug("Allowlist rescue skipped for %s: %s", user, exc)
+    if rescued > 0:
+        clear_quarantine_cache()
     return rescued
 
 
 def run_quarantine_digest(*, user_filter: str = "") -> dict[str, int]:
-    """Scan Junk folders and deliver digest emails ONLY to users with >=1 new spam message."""
+    """Scan Junk folders in parallel and deliver digest emails ONLY to users with >=1 new spam message."""
+    clear_quarantine_cache()
     settings = get_settings()
     rescue_allowlisted_junk_messages(settings)
 
@@ -451,37 +611,48 @@ def run_quarantine_digest(*, user_filter: str = "") -> dict[str, int]:
         )
         candidates.append({"user": target_user, "mail": fallback_mail, "enabled": True})
 
+    scan_targets: list[tuple[str, str]] = [
+        (str(mb["user"]), _resolve_public_mailbox_email(mb, fallback_domain))
+        for mb in candidates
+    ]
+
+    scanned_by_user: dict[str, list[dict[str, Any]]] = {}
+    failed_users: dict[str, Exception] = {}
+    if scan_targets:
+        workers = min(_QUARANTINE_MAX_WORKERS, len(scan_targets))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            fut_map = {
+                executor.submit(
+                    fetch_user_junk_items,
+                    u_name,
+                    rcpt_email,
+                    settings.mail,
+                    max_uids=100,
+                    since_days=14,
+                    imap_timeout=5.0,
+                ): u_name
+                for u_name, rcpt_email in scan_targets
+            }
+            for fut in as_completed(fut_map):
+                u_name = fut_map[fut]
+                try:
+                    scanned_by_user[u_name] = fut.result()
+                except Exception as exc:
+                    failed_users[u_name] = exc
+
     users_checked = 0
     digests_sent = 0
     items_included = 0
     now = datetime.now(timezone.utc)
     expires_iso = (now + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-    for mb in candidates:
-        u_name = str(mb["user"])
-        raw_mb_mail = str(mb.get("mail") or "").strip()
-        raw_mb_dom = raw_mb_mail.split("@", 1)[1].strip().lower() if "@" in raw_mb_mail else ""
-        if not raw_mb_mail or (raw_mb_dom.startswith(("ad.", "ldap.")) and raw_mb_dom.count(".") >= 2):
-            public_alias = next(
-                (
-                    str(a).strip()
-                    for a in (mb.get("aliases") or [])
-                    if "@" in str(a)
-                    and not str(a).split("@", 1)[1].strip().lower().startswith(("ad.", "ldap."))
-                ),
-                "",
-            )
-            rcpt_email = public_alias or f"{u_name}@{fallback_domain}"
-        else:
-            rcpt_email = raw_mb_mail
+    for u_name, rcpt_email in scan_targets:
         users_checked += 1
-
-        try:
-            junk_items = fetch_user_junk_items(u_name, rcpt_email, settings.mail)
-        except Exception as exc:
-            logger.warning("Failed inspecting Junk folder for %s: %s", u_name, exc)
+        if u_name in failed_users:
+            logger.warning("Failed inspecting Junk folder for %s: %s", u_name, failed_users[u_name])
             continue
 
+        junk_items = scanned_by_user.get(u_name) or []
         if not junk_items:
             continue
 
@@ -537,6 +708,7 @@ def run_quarantine_digest(*, user_filter: str = "") -> dict[str, int]:
     now_iso = utc_now_iso()
     set_meta("digest_last_run_at", now_iso, settings.sqlite_path)
     set_meta("digest_last_digests_sent", str(digests_sent), settings.sqlite_path)
+    clear_quarantine_cache()
     return {
         "users_checked": users_checked,
         "digests_sent": digests_sent,
@@ -549,45 +721,105 @@ def list_admin_quarantine(
     user_filter: str = "",
     search: str = "",
     limit: int = 200,
+    force_refresh: bool = False,
+    soft_deadline_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Return quarantined Junk items across mailboxes, digest status, and sender allowlist."""
+    """Return quarantined Junk items across enabled mailboxes, digest status, and sender allowlist."""
     settings = get_settings()
-    base_map = build_base_mailbox_map(settings)
     u_filt = (user_filter or "").strip().lower()
     q_search = (search or "").strip().lower()
+    cache_key = (str(settings.sqlite_path), u_filt)
 
-    all_items: list[dict[str, Any]] = []
-    if settings.mail.host and settings.mail.master_password:
-        for u_name, meta in sorted(base_map.items()):
-            if u_filt and u_name.lower() != u_filt:
-                continue
-            rcpt = str(meta.get("mail") or u_name)
-            try:
-                user_items = fetch_user_junk_items(u_name, rcpt, settings.mail)
-            except Exception as exc:
-                logger.debug("Quarantine listing skipped for %s: %s", u_name, exc)
-                continue
+    raw_scanned: list[dict[str, Any]] | None = None
+    if not force_refresh:
+        with _quarantine_cache_lock:
+            cached = _quarantine_scan_cache.get(cache_key)
+            if cached is not None and (time.monotonic() - cached[0]) < _QUARANTINE_CACHE_TTL_SECONDS:
+                raw_scanned = [dict(it) for it in cached[1]]
 
-            for item in user_items:
-                if q_search:
-                    haystack = (
-                        f"{item['recipient']} {item['sender']} {item['subject']}".lower()
-                    )
-                    if q_search not in haystack:
-                        continue
-                all_items.append(
-                    {
-                        "id": item["id"],
-                        "user": item["user"],
-                        "recipient": item["recipient"],
-                        "sender": item["sender"],
-                        "subject": item["subject"],
-                        "received_at": item["received_at"],
-                        "spam_score": item["spam_score"],
-                        "uid": item["uid"],
-                        "message_id": item["message_id"],
-                    }
+    if raw_scanned is None:
+        raw_scanned = []
+        timed_out_scan = False
+        if settings.mail.host and settings.mail.master_password:
+            base_map = build_base_mailbox_map(settings)
+            fallback_domain = resolve_sender_domain("", settings, base_map)
+            targets: list[tuple[str, str]] = []
+            for u_name, meta in sorted(base_map.items()):
+                if not meta.get("enabled", True):
+                    continue
+                if u_filt and u_name.lower() != u_filt:
+                    continue
+                rcpt = _resolve_public_mailbox_email(meta, fallback_domain)
+                targets.append((u_name, rcpt))
+
+            if targets:
+                deadline = float(
+                    soft_deadline_seconds
+                    if soft_deadline_seconds is not None
+                    else _QUARANTINE_SCAN_SOFT_DEADLINE_SECONDS
                 )
+                workers = min(_QUARANTINE_MAX_WORKERS, len(targets))
+                executor = ThreadPoolExecutor(max_workers=workers)
+                fut_map = {
+                    executor.submit(
+                        fetch_user_junk_items,
+                        u_name,
+                        rcpt,
+                        settings.mail,
+                        max_uids=100,
+                        imap_timeout=5.0,
+                    ): u_name
+                    for u_name, rcpt in targets
+                }
+                try:
+                    for fut in as_completed(fut_map, timeout=deadline):
+                        u_name = fut_map[fut]
+                        try:
+                            user_items = fut.result()
+                            for item in user_items:
+                                raw_scanned.append(
+                                    {
+                                        "id": item["id"],
+                                        "user": item["user"],
+                                        "recipient": item["recipient"],
+                                        "sender": item["sender"],
+                                        "subject": item["subject"],
+                                        "received_at": item["received_at"],
+                                        "spam_score": item["spam_score"],
+                                        "uid": item["uid"],
+                                        "message_id": item["message_id"],
+                                    }
+                                )
+                        except Exception as exc:
+                            logger.debug("Quarantine listing skipped for %s: %s", u_name, exc)
+                except FuturesTimeoutError:
+                    timed_out_scan = True
+                    pending = [u for f, u in fut_map.items() if not f.done()]
+                    logger.warning(
+                        "Quarantine IMAP scan hit %.1fs soft deadline; returning partial results (%d mailbox(es) pending: %s)",
+                        deadline,
+                        len(pending),
+                        ", ".join(pending[:10]),
+                    )
+                finally:
+                    executor.shutdown(wait=not timed_out_scan, cancel_futures=True)
+
+        raw_scanned.sort(key=lambda x: x["received_at"], reverse=True)
+        if not timed_out_scan:
+            with _quarantine_cache_lock:
+                _quarantine_scan_cache[cache_key] = (
+                    time.monotonic(),
+                    [dict(it) for it in raw_scanned],
+                )
+
+    if q_search:
+        all_items = [
+            it
+            for it in raw_scanned
+            if q_search in f"{it['recipient']} {it['sender']} {it['subject']}".lower()
+        ]
+    else:
+        all_items = list(raw_scanned)
 
     all_items.sort(key=lambda x: x["received_at"], reverse=True)
     clamped = max(1, min(int(limit), 1000))
@@ -635,6 +867,7 @@ def admin_release_quarantine_item(
             pass
 
     delivered = move_junk_to_inbox(user=user, uid=uid, message_id=message_id, mail_cfg=settings.mail)
+    clear_quarantine_cache()
     allowlisted = False
     if allow_sender and sender_to_allow and "@" in sender_to_allow:
         add_sender_allowlist(user, sender_to_allow, settings.sqlite_path)
@@ -767,6 +1000,7 @@ def execute_quarantine_token_action(token: str, op: str) -> tuple[int, dict[str,
             "message": "This message has already been released.",
         }
 
+    clear_quarantine_cache()
     add_audit_entry(
         actor=rec_user or "recipient",
         source="quarantine_portal",

@@ -47,9 +47,20 @@ from app.backend.sieve_engine import (
 
 logger = logging.getLogger(__name__)
 
+_SCHEDULED_DIGEST_RETRY_COOLDOWN_SECONDS = 900.0
+_last_scheduled_digest_error_mono: float | None = None
+
+
+def reset_scheduled_digest_backoff() -> None:
+    """Clear transient scheduled-digest retry cooldown state."""
+    global _last_scheduled_digest_error_mono
+    _last_scheduled_digest_error_mono = None
+
 
 def check_and_run_scheduled_digest(now_utc: datetime | None = None) -> bool:
     """Run daily quarantine digest if `digest_enabled`, past `digest_time`, and not yet run today."""
+    global _last_scheduled_digest_error_mono
+
     settings = get_settings()
     if not settings.runtime.digest_enabled:
         return False
@@ -78,8 +89,22 @@ def check_and_run_scheduled_digest(now_utc: datetime | None = None) -> bool:
     if current_minutes < target_minutes:
         return False
 
+    if _last_scheduled_digest_error_mono is not None:
+        if (time.monotonic() - _last_scheduled_digest_error_mono) < _SCHEDULED_DIGEST_RETRY_COOLDOWN_SECONDS:
+            return False
+
+    try:
+        run_quarantine_digest()
+    except Exception as exc:
+        _last_scheduled_digest_error_mono = time.monotonic()
+        logger.warning(
+            "Scheduled quarantine digest failed (will retry after 15m cooldown): %s",
+            exc,
+        )
+        return False
+
+    _last_scheduled_digest_error_mono = None
     set_meta("digest_last_scheduled_date", today_key, settings.sqlite_path)
-    run_quarantine_digest()
     return True
 
 

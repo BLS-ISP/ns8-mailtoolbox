@@ -18,7 +18,12 @@ from app.backend.auth import reset_rate_limiter
 from app.backend.config import LdapSettings
 from app.backend.connector_service import set_external_imap_factory, set_external_pop3_factory
 from app.backend.ldap_client import set_ldap_connection_factory
-from app.backend.quarantine_service import set_imap_master_factory, set_smtp_sender
+from app.backend.quarantine_service import (
+    clear_quarantine_cache,
+    set_imap_master_factory,
+    set_smtp_sender,
+)
+from app.backend.reconciler import reset_scheduled_digest_backoff
 from app.backend.tests.mock_managesieve import MockManageSieveServer
 
 
@@ -290,6 +295,8 @@ def toolbox_env(
 
     set_ldap_connection_factory(_factory)
     reset_rate_limiter()
+    clear_quarantine_cache()
+    reset_scheduled_digest_backoff()
     try:
         yield {"data_dir": data_dir, "config_dir": config_dir, "static_dir": static_dir}
     finally:
@@ -298,4 +305,6 @@ def toolbox_env(
         set_smtp_sender(None)
         set_external_imap_factory(None)
         set_external_pop3_factory(None)
+        clear_quarantine_cache()
+        reset_scheduled_digest_backoff()
         reset_rate_limiter()

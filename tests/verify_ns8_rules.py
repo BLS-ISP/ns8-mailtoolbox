@@ -1432,6 +1432,42 @@ def test_contract_cockpit_ui_to_imageroot_actions_and_schemas():
             f"Missing `action.{ext_act}` in `ui/public/i18n/{{en,de}}/translation.json`"
         )
 
+    # 8. Check v1.0.7 MailTracking.vue lazy quarantine loading & imageroot unconfigured/force_refresh guards
+    mail_tracking_text = (UI_DIR / "src" / "views" / "MailTracking.vue").read_text(encoding="utf-8")
+    _, mail_tracking_script = _extract_vue_sections(mail_tracking_text)
+    assert "onTabSelected" in mail_tracking_text and "quarantineLoadedOnce" in mail_tracking_script, (
+        "`MailTracking.vue` must lazy-load `listQuarantine` via `onTabSelected` and `quarantineLoadedOnce`"
+    )
+    assert "force_refresh: true" in mail_tracking_script, (
+        "`MailTracking.vue` manual refresh must pass `force_refresh: true` to `list-quarantine`"
+    )
+    created_match = re.search(r"\bcreated\s*\(\s*\)\s*\{", mail_tracking_script)
+    assert created_match, "`MailTracking.vue` missing `created()` lifecycle hook"
+    created_body = _extract_balanced_parens(mail_tracking_script, created_match.end() - 1)
+    # Strip conditional `if (...) { ... }` blocks inside `created()` to verify `listQuarantine` is never called unconditionally
+    created_top_level = created_body
+    for if_m in reversed(list(re.finditer(r"\bif\s*\([^)]*\)\s*\{", created_body))):
+        if_block = _extract_balanced_parens(created_body, if_m.end() - 1)
+        created_top_level = (
+            created_top_level[: if_m.start()]
+            + created_top_level[if_m.end() - 1 + len(if_block) :]
+        )
+    assert "listQuarantine" not in created_top_level, (
+        "`MailTracking.vue` must NOT call `this.listQuarantine()` unconditionally in `created()`!"
+    )
+    assert "listQuarantine" in created_body and "quarantine" in created_body, (
+        "`MailTracking.vue` `created()` must still honor `?tab=quarantine` deep-links"
+    )
+
+    list_quar_script = (ACTIONS_DIR / "list-quarantine" / "20read").read_text(encoding="utf-8")
+    assert "force_refresh" in list_quar_script and "MAIL_MODULE_UUID" in list_quar_script, (
+        "`imageroot/actions/list-quarantine/20read` must forward `force_refresh` and guard unconfigured `MAIL_MODULE_UUID`"
+    )
+    run_dig_script = (ACTIONS_DIR / "run-digest-now" / "20write").read_text(encoding="utf-8")
+    assert "MAIL_MODULE_UUID" in run_dig_script, (
+        "`imageroot/actions/run-digest-now/20write` must guard unconfigured `MAIL_MODULE_UUID`"
+    )
+
 
 def test_release_artifacts_license_and_ns8_repo_workflow():
     """Verify root GPL-3.0 `LICENSE` and `.github/workflows/publish-ns8-repo.yml` release workflow."""
@@ -1457,7 +1493,7 @@ def test_release_artifacts_license_and_ns8_repo_workflow():
 
 
 def test_github_release_alignment_and_english_readme():
-    """Verify all 7 English-only .md docs & relative links, CHANGELOG/package.json v1.0.5 alignment, BLS-ISP OCI metadata & CI workflows."""
+    """Verify all 7 English-only .md docs & relative links, CHANGELOG/package.json v1.0.7 alignment, BLS-ISP OCI metadata & CI workflows."""
     # 1. Verify all 7 required repository Markdown documentation files exist, are 100% English-only, have valid relative links, and 0 CR bytes
     expected_md_rel_paths = (
         "README.md",
@@ -1544,7 +1580,7 @@ def test_github_release_alignment_and_english_readme():
         )
 
     changelog_text = (ROOT_DIR / "CHANGELOG.md").read_text(encoding="utf-8")
-    for rel_ver in ("1.0.6", "1.0.5", "1.0.4", "1.0.3", "1.0.2", "1.0.1", "1.0.0"):
+    for rel_ver in ("1.0.7", "1.0.6", "1.0.5", "1.0.4", "1.0.3", "1.0.2", "1.0.1", "1.0.0"):
         assert f"## [{rel_ver}]" in changelog_text, (
             f"CHANGELOG.md missing section `## [{rel_ver}]`"
         )
@@ -1554,8 +1590,8 @@ def test_github_release_alignment_and_english_readme():
 
     ui_pkg_ver = json.loads((UI_DIR / "package.json").read_text(encoding="utf-8")).get("version")
     portal_pkg_ver = json.loads((FRONTEND_DIR / "package.json").read_text(encoding="utf-8")).get("version")
-    assert ui_pkg_ver == "1.0.6", f"ui/package.json version expected '1.0.6', got {ui_pkg_ver!r}"
-    assert portal_pkg_ver == "1.0.6", f"app/frontend/package.json version expected '1.0.6', got {portal_pkg_ver!r}"
+    assert ui_pkg_ver == "1.0.7", f"ui/package.json version expected '1.0.7', got {ui_pkg_ver!r}"
+    assert portal_pkg_ver == "1.0.7", f"app/frontend/package.json version expected '1.0.7', got {portal_pkg_ver!r}"
 
     # 2. OCI & Software Center metadata alignment across app/Containerfile, build-images.sh & ui/public/metadata.json
     containerfile_text = APP_CONTAINERFILE.read_text(encoding="utf-8")
@@ -1951,6 +1987,7 @@ def test_jsonschema_ui_inputs_and_live_backend_outputs(
         "sync-connector-now": {"id": 1},
         "list-mailboxes": {"force_refresh": True},
         "list-connectors": {"force_refresh": True},
+        "list-quarantine": {"force_refresh": True},
     }
 
     # Check every validate-input.json / validate-output.json in imageroot/actions/ is valid Draft-07 JSON Schema
@@ -1965,13 +2002,21 @@ def test_jsonschema_ui_inputs_and_live_backend_outputs(
         jsonschema.Draft7Validator.check_schema(schema)
         jsonschema.validate(instance=payload, schema=schema)
 
-    # Verify v1.0.5 `list-mailboxes` and `list-connectors` input schemas accept `null` (omitted `data:`), `{}`, and `force_refresh` booleans
-    for cacheable_read_action in ("list-mailboxes", "list-connectors"):
+    # Verify v1.0.5/v1.0.7 cacheable read actions accept `null` (omitted `data:`), `{}`, and `force_refresh` booleans
+    for cacheable_read_action in ("list-mailboxes", "list-connectors", "list-quarantine"):
         read_in_schema = json.loads(
             (ACTIONS_DIR / cacheable_read_action / "validate-input.json").read_text(encoding="utf-8")
         )
         for sample_in in (None, {}, {"force_refresh": False}, {"force_refresh": True}):
             jsonschema.validate(instance=sample_in, schema=read_in_schema)
+
+    list_quar_in_schema = json.loads(
+        (ACTIONS_DIR / "list-quarantine" / "validate-input.json").read_text(encoding="utf-8")
+    )
+    jsonschema.validate(
+        instance={"user": "alice", "search": "offer", "limit": 50, "force_refresh": True},
+        schema=list_quar_in_schema,
+    )
 
     # Verify configure-module schema explicitly accepts empty `allowed_groups: []` AND Cockpit-only `portal_enabled: False, portal_hostname: ""`
     cfg_schema = json.loads((ACTIONS_DIR / "configure-module" / "validate-input.json").read_text(encoding="utf-8"))

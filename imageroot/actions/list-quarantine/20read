@@ -39,6 +39,14 @@ def main() -> int:
                     val = parsed.get(key)
                     if val is not None and str(val).strip() != "":
                         query_params[key] = str(val).strip()
+                raw_force = parsed.get("force_refresh")
+                is_force = (
+                    raw_force
+                    if isinstance(raw_force, bool)
+                    else str(raw_force or "").strip().lower() in ("1", "true", "yes", "on")
+                )
+                if is_force:
+                    query_params["force_refresh"] = "true"
     except Exception:
         query_params = {}
 
@@ -52,6 +60,10 @@ def main() -> int:
         return 0
 
     token = token_path.read_text(encoding="utf-8").strip()
+    if not token:
+        json.dump(_unconfigured_response(), sys.stdout)
+        return 0
+
     base_url = f"http://127.0.0.1:{web_tcp_port}/api/internal/quarantine"
     qs = urllib.parse.urlencode(query_params)
     url = f"{base_url}?{qs}" if qs else base_url
@@ -66,7 +78,7 @@ def main() -> int:
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=90) as resp:
             sys.stdout.write(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="replace")

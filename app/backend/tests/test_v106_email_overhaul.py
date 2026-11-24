@@ -77,17 +77,29 @@ class AppendCapableImapConn:
             uids = sorted(fmap.keys(), key=lambda x: int(x))
             return "OK", [" ".join(uids).encode("ascii")]
         if upper == "FETCH":
-            target_uid = str(args[0])
+            uid_spec = str(args[0])
             spec = str(args[1]) if len(args) > 1 else "(RFC822)"
             self.store.fetch_specs.append(spec)
-            if target_uid not in fmap:
-                return "NO", []
-            raw = fmap[target_uid]
-            if "HEADER" in spec.upper():
-                sep = b"\r\n\r\n" if b"\r\n\r\n" in raw else b"\n\n"
-                hdr_bytes = raw.split(sep, 1)[0] + b"\r\n\r\n"
-                return "OK", [(f"{target_uid} (BODY[HEADER] {{{len(hdr_bytes)}}})".encode("ascii"), hdr_bytes)]
-            return "OK", [(f"{target_uid} (RFC822 {{{len(raw)}}})".encode("ascii"), raw)]
+            req_uids = [u.strip() for u in uid_spec.split(",") if u.strip()]
+            out_tuples: list[Any] = []
+            for seq_idx, target_uid in enumerate(req_uids, start=1):
+                if target_uid not in fmap:
+                    continue
+                raw = fmap[target_uid]
+                if "HEADER" in spec.upper():
+                    sep = b"\r\n\r\n" if b"\r\n\r\n" in raw else b"\n\n"
+                    hdr_bytes = raw.split(sep, 1)[0] + b"\r\n\r\n"
+                    out_tuples.append(
+                        (
+                            f"{seq_idx} (UID {target_uid} BODY[HEADER] {{{len(hdr_bytes)}}})".encode("ascii"),
+                            hdr_bytes,
+                        )
+                    )
+                else:
+                    out_tuples.append(
+                        (f"{seq_idx} (UID {target_uid} RFC822 {{{len(raw)}}})".encode("ascii"), raw)
+                    )
+            return ("OK", out_tuples) if out_tuples else ("NO", [])
         return "BAD", [b"Unsupported"]
 
     def append(
@@ -418,8 +430,9 @@ def test_body_peek_header_and_self_digest_loop_protection_in_junk(
     assert len(items) == 1
     assert items[0]["message_id"] == "<real-spam-1@attacker.example>"
 
-    # Lightweight header-only scan (`BODY.PEEK[HEADER]`), zero `(RFC822)` full-body downloads!
-    assert all(spec == "(BODY.PEEK[HEADER])" for spec in store.fetch_specs)
+    # Lightweight header-only batch scan (`(UID BODY.PEEK[HEADER])`), zero `(RFC822)` full-body downloads!
+    assert store.fetch_specs
+    assert all("BODY.PEEK[HEADER]" in spec and "RFC822" not in spec for spec in store.fetch_specs)
 
 
 def test_multipart_html_and_plaintext_connector_and_imapsync_alerts(

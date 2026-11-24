@@ -1,6 +1,6 @@
 # NS8 Mail Toolbox — Cockpit Admin UI (`ui/`)
 
-This directory contains the NethServer 8 Cluster-Admin (Cockpit) frontend for **NS8 Mail Toolbox** (`ns8-mail-toolbox-ui`, `v1.0.5`). It runs as an embedded NS8 module application inside the NethServer 8 Cluster-Admin shell and communicates exclusively through the NS8 Cockpit WebSocket task API (`createModuleTaskForApp` and `createClusterTaskForApp`).
+This directory contains the NethServer 8 Cluster-Admin (Cockpit) frontend for **NS8 Mail Toolbox** (`ns8-mail-toolbox-ui`, `v1.0.7`). It runs as an embedded NS8 module application inside the NethServer 8 Cluster-Admin shell and communicates exclusively through the NS8 Cockpit WebSocket task API (`createModuleTaskForApp` and `createClusterTaskForApp`).
 
 ## Technology Stack
 
@@ -15,7 +15,7 @@ This directory contains the NethServer 8 Cluster-Admin (Cockpit) frontend for **
 ```text
 ui/
 ├── Containerfile                       # Multi-stage Node 20 build stage outputting dist/
-├── package.json                        # Package manifest (version 1.0.5) & npm scripts
+├── package.json                        # Package manifest (version 1.0.7) & npm scripts
 ├── public/
 │   ├── metadata.json                   # NS8 Software Center metadata (EN & DE descriptions, links)
 │   ├── shortcuts.json                  # NS8 Cockpit keyboard/search navigation shortcuts
@@ -90,9 +90,10 @@ To keep the NethServer 8 Cluster-Admin UI responsive and completely free of back
   - Every background read, discovery, log fetch, preview, connection test, and quick row/modal mutation (`28/29` task call sites across `ui/src/**`, plus `runExternalImapsyncTask` defaults) sets `extra: { ..., isNotificationHidden: true }`.
   - Quick write actions (`set-vacation`, `save-signature`, `delete-signature`, `set-templates`, `release-quarantine`, `run-digest-now`, `delete-allowlist`, `save-connector`, `sync-connector-now`, `delete-connector`, `start-task`, `stop-task`) surface immediate feedback via inline Carbon `NsInlineNotification` banners instead of stacking persistent notifications in the NS8 right-hand task drawer.
   - Only `configure-module` in `Settings.vue` uses a visible NS8 task notification so cluster-wide Traefik/module reconfiguration progress and validation feedback appear in the standard NS8 task bar.
-- **Cache-First Initial Loads vs Explicit User Refresh (`force_refresh`)**:
+- **Cache-First Initial Loads, Lazy Tab Loading & Explicit User Refresh (`force_refresh`)**:
   - Initial `created()` loads in `Mailboxes.vue`, `Connectors.vue`, `Signatures.vue`, and `Status.vue` call `list-mailboxes` and `list-connectors` **without** `force_refresh`, allowing `imageroot` to serve warm 300-second caches (`mailboxes_cache.json`, `imapsync_cache.json`) with zero child NS8 tasks.
-  - Clicking the manual **Refresh** button in `Mailboxes.vue` or `Connectors.vue` passes `data: { force_refresh: true }` to trigger an immediate live sync.
+  - `MailTracking.vue` loads `list-quarantine` lazily only when switching to Tab 2 (`Spam Quarantine & Digest`) via `@tab-selected` (or when deep-linked via `?tab=quarantine`), tracking `quarantineLoadedOnce` so switching tabs does not trigger redundant IMAP scans.
+  - Clicking the manual **Refresh** button in `Mailboxes.vue`, `Connectors.vue`, or the Quarantine tab in `MailTracking.vue` passes `force_refresh: true` to trigger an immediate live sync.
   - `Status.vue` waits for `get-configuration` to complete and skips `list-mailboxes`, `list-signatures`, and `list-connectors` altogether when `configured === false`.
 - **NS8 UI Library Safety**:
   - Never call `createSuccessNotificationForApp` (which does not exist in `@nethserver/ns8-ui-lib`); always use inline `NsInlineNotification` components.

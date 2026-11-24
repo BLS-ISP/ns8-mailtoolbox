@@ -8,12 +8,16 @@
 
     <cv-row>
       <cv-column>
-        <NsTabs :container="false" :aria-label="$t('tracking.tabs_aria')">
+        <NsTabs
+          :container="false"
+          :aria-label="$t('tracking.tabs_aria')"
+          @tab-selected="onTabSelected"
+        >
           <!-- TAB 1: Fast Mail-Tracking Search (Rspamd History + SQLite Cache) -->
           <cv-tab
             id="tab-history"
             :label="$t('tracking.tab_history')"
-            :selected="true"
+            :selected="activeTab !== 'quarantine'"
           >
             <div class="tab-panel">
               <NsInlineNotification
@@ -217,7 +221,11 @@
           </cv-tab>
 
           <!-- TAB 2: Spam Quarantine, Daily Digest & Sender Allowlist -->
-          <cv-tab id="tab-quarantine" :label="$t('tracking.tab_quarantine')">
+          <cv-tab
+            id="tab-quarantine"
+            :label="$t('tracking.tab_quarantine')"
+            :selected="activeTab === 'quarantine'"
+          >
             <div class="tab-panel">
               <NsInlineNotification
                 v-if="error.quarantineAction"
@@ -281,7 +289,7 @@
                       :icon="Renew20"
                       :loading="loading.listQuarantine"
                       :disabled="loading.listQuarantine"
-                      @click="listQuarantine"
+                      @click="listQuarantine(true)"
                     >
                       {{ $t("common.refresh") }}
                     </NsButton>
@@ -614,6 +622,8 @@ export default {
         page: "mail-tracking",
       },
       urlCheckInterval: null,
+      activeTab: "history",
+      quarantineLoadedOnce: false,
       filters: {
         sender: "",
         recipient: "",
@@ -705,9 +715,31 @@ export default {
   },
   created() {
     this.searchMailHistory();
-    this.listQuarantine();
+    const qp =
+      (typeof this.getQueryParamsForApp === "function" &&
+        this.getQueryParamsForApp()) ||
+      {};
+    const routeTab =
+      (this.$route && this.$route.query && this.$route.query.tab) || "";
+    const initialTab = String(qp.tab || routeTab || "").toLowerCase();
+    if (initialTab === "quarantine" || initialTab === "tab-quarantine") {
+      this.activeTab = "quarantine";
+      this.quarantineLoadedOnce = true;
+      this.listQuarantine(false);
+    }
   },
   methods: {
+    onTabSelected(tabIndex) {
+      const isQuarantineTab =
+        tabIndex === 1 ||
+        tabIndex === "tab-quarantine" ||
+        tabIndex === "quarantine";
+      this.activeTab = isQuarantineTab ? "quarantine" : "history";
+      if (isQuarantineTab && !this.quarantineLoadedOnce) {
+        this.quarantineLoadedOnce = true;
+        this.listQuarantine(false);
+      }
+    },
     coreT(coreKey, fallbackKey) {
       if (this.core && typeof this.core.$t === "function") {
         return this.core.$t(coreKey);
@@ -812,7 +844,8 @@ export default {
         this.loading.searchHistory = false;
       }
     },
-    async listQuarantine() {
+    async listQuarantine(forceRefresh = false) {
+      this.quarantineLoadedOnce = true;
       this.loading.listQuarantine = true;
       this.error.listQuarantine = "";
       const taskAction = "list-quarantine";
@@ -847,6 +880,7 @@ export default {
             user: "",
             search: "",
             limit: 200,
+            ...(forceRefresh === true ? { force_refresh: true } : {}),
           },
           extra: {
             title: this.$t("action." + taskAction),
